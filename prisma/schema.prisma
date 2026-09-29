@@ -1,0 +1,83 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum PerfilUsuario {
+  SOLICITANTE
+  ATENDENTE
+
+  @@map("perfil_usuario")
+}
+
+enum StatusSolicitacao {
+  ABERTO
+  EM_ATENDIMENTO
+  CONCLUIDO
+
+  @@map("status_solicitacao")
+}
+
+model Usuario {
+  id      Int           @id @default(autoincrement())
+  nome    String        @db.VarChar(255)
+  // Login no padrão "nome.sobrenome" (ex.: luiz.silva). Seeds: atendente.um, solicitante.um
+  usuario String        @unique @db.VarChar(255)
+  senha   String        @db.VarChar(255)
+  perfil  PerfilUsuario @default(SOLICITANTE)
+
+  solicitacoes Solicitacao[]
+  historico    HistoricoSolicitacao[]
+
+  @@map("usuarios")
+}
+
+model Categoria {
+  id    Int     @id @default(autoincrement())
+  nome  String  @unique @db.VarChar(255)
+  ativa Boolean @default(true)
+
+  solicitacoes Solicitacao[]
+
+  @@map("categorias")
+}
+
+model Solicitacao {
+  codigo      Int               @id @default(autoincrement())
+  titulo      String            @db.VarChar(255)
+  descricao   String
+  categoriaId Int               @map("categoria_id")
+  status      StatusSolicitacao @default(ABERTO)
+  dataCriacao DateTime          @default(now()) @map("data_criacao") @db.Timestamptz(6)
+  usuarioId   Int               @map("usuario_id")
+
+  categoria Categoria              @relation(fields: [categoriaId], references: [id])
+  usuario   Usuario                @relation(fields: [usuarioId], references: [id])
+  historico HistoricoSolicitacao[]
+
+  @@index([usuarioId])
+  @@index([categoriaId])
+  @@index([status])
+  @@index([dataCriacao])
+  @@map("solicitacoes")
+}
+
+model HistoricoSolicitacao {
+  id                Int                @id @default(autoincrement())
+  solicitacaoCodigo Int                @map("solicitacao_codigo")
+  usuarioId         Int                @map("usuario_id")
+  statusAnterior    StatusSolicitacao? @map("status_anterior")
+  statusNovo        StatusSolicitacao  @map("status_novo")
+  dataAlteracao     DateTime           @default(now()) @map("data_alteracao") @db.Timestamptz(6)
+
+  solicitacao Solicitacao @relation(fields: [solicitacaoCodigo], references: [codigo], onDelete: Cascade)
+  usuario     Usuario     @relation(fields: [usuarioId], references: [id])
+
+  @@index([solicitacaoCodigo])
+  @@index([usuarioId])
+  @@map("historico_solicitacoes")
+}
