@@ -8,15 +8,15 @@ Fonte: Memorial Técnico. O status de cada caso de uso é mantido pela skill `us
 
 | Código | Caso de uso | Atores | Status |
 |--------|-------------|--------|--------|
-| UC01 | Efetuar Autenticação (Login e Logout) | Solicitante, Atendente | Pendente |
-| UC02 | Registrar Nova Solicitação | Solicitante (e Atendente) | Pendente |
+| UC01 | Efetuar Autenticação (Login e Logout) | Solicitante, Atendente | Finalizado |
+| UC02 | Registrar Nova Solicitação | Solicitante (e Atendente) | Finalizado |
 | UC03 | Editar Solicitação | Solicitante | Pendente |
 | UC04 | Excluir Solicitação | Solicitante | Pendente |
 | UC05 | Listar, Filtrar e Consultar Solicitações | Solicitante, Atendente | Pendente |
 | UC06 | Alterar Status da Solicitação | Atendente | Pendente |
 | UC07 | Visualizar Dashboard | Atendente | Pendente |
 
-**Resumo:** 7 Pendentes · 0 Aguardando Validação · 0 Finalizados
+**Resumo:** 5 Pendentes · 0 Aguardando Validação · 2 Finalizados
 
 ## Detalhamento
 
