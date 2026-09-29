@@ -32,7 +32,7 @@ Copie `.env.example` para `.env` antes de tudo.
 ## Regras de negócio essenciais
 - Todas as rotas exigem autenticação, exceto login.
 - Solicitante: edita/exclui só solicitações **próprias** com status `ABERTO`; lista só as próprias.
-- Atendente: lista todas, altera status, vê o dashboard (total + abertas/em atendimento/concluídas). Também pode abrir chamados.
+- Atendente: lista todas, altera status, vê o dashboard (total + abertas/em atendimento/concluídas). **Não abre chamados**: só atende.
 - Criar solicitação: status `ABERTO`, data e usuário automáticos, e grava histórico `null → ABERTO`.
 - Status muda só em sequência `ABERTO → EM_ATENDIMENTO → CONCLUIDO`, sempre com registro em `historico_solicitacoes`.
 

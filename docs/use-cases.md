@@ -9,14 +9,14 @@ Fonte: Memorial Técnico. O status de cada caso de uso é mantido pela skill `us
 | Código | Caso de uso | Atores | Status |
 |--------|-------------|--------|--------|
 | UC01 | Efetuar Autenticação (Login e Logout) | Solicitante, Atendente | Finalizado |
-| UC02 | Registrar Nova Solicitação | Solicitante (e Atendente) | Finalizado |
-| UC03 | Editar Solicitação | Solicitante | Pendente |
-| UC04 | Excluir Solicitação | Solicitante | Pendente |
+| UC02 | Registrar Nova Solicitação | Solicitante | Finalizado |
+| UC03 | Editar Solicitação | Solicitante | Finalizado |
+| UC04 | Excluir Solicitação | Solicitante | Finalizado |
 | UC05 | Listar, Filtrar e Consultar Solicitações | Solicitante, Atendente | Pendente |
 | UC06 | Alterar Status da Solicitação | Atendente | Pendente |
 | UC07 | Visualizar Dashboard | Atendente | Pendente |
 
-**Resumo:** 5 Pendentes · 0 Aguardando Validação · 2 Finalizados
+**Resumo:** 3 Pendentes · 0 Aguardando Validação · 4 Finalizados
 
 ## Detalhamento
 
@@ -27,10 +27,11 @@ Fonte: Memorial Técnico. O status de cada caso de uso é mantido pela skill `us
 - **Decisão técnica:** JWT com expiração de 1h + bcrypt; logout descarta o token no cliente.
 
 ### UC02 - Registrar Nova Solicitação
-- **Atores:** Solicitante (e opcionalmente o Atendente, caso também precise abrir chamados).
+- **Atores:** Solicitante. O Atendente não abre solicitações, apenas atende.
 - **Descrição:** Preenche Título, Descrição e seleciona a Categoria (TI, RH, Compras, Financeiro, Infraestrutura).
 - **Regras de negócio:** O sistema preenche a data de criação, vincula o usuário solicitante e define o status inicial estritamente como "Aberto".
 - **Decisão técnica:** grava também a linha inicial `null → ABERTO` em `historico_solicitacoes`. Categoria com `ativa=false` não pode ser escolhida.
+- **Nota de ajuste:** após a primeira aprovação, o ator foi restringido a Solicitante (Atendente não abre chamados); reaprovado em seguida.
 
 ### UC03 - Editar Solicitação
 - **Atores:** Solicitante.
