@@ -232,4 +232,213 @@ describe('Autenticação e solicitações (e2e)', () => {
       await request(app.getHttpServer()).delete('/solicitacoes/1').expect(401);
     });
   });
+
+  describe('listar, consultar e alterar status (UC05/UC06)', () => {
+    const marcador = `E2E${Date.now()}`;
+    let solicitante: { Authorization: string };
+    let atendente: { Authorization: string };
+    let idSolicitante: number;
+    let codigoProprio: number;
+    let codigoAlheio: number;
+
+    const listar = (auth: { Authorization: string }, query = '') =>
+      request(app.getHttpServer()).get(`/solicitacoes${query}`).set(auth);
+    const codigos = (body: { codigo: number }[]) => body.map((s) => s.codigo);
+
+    beforeAll(async () => {
+      const prisma = app.get(PrismaService);
+      const { body: s } = await login('solicitante.um');
+      const { body: a } = await login('atendente.um');
+      solicitante = { Authorization: `Bearer ${s.accessToken}` };
+      atendente = { Authorization: `Bearer ${a.accessToken}` };
+      idSolicitante = s.usuario.id;
+
+      const res = await request(app.getHttpServer())
+        .post('/solicitacoes')
+        .set(solicitante)
+        .send({ titulo: `Notebook ${marcador}`, descricao: 'Detalhe', categoriaId: 1 })
+        .expect(201);
+      codigoProprio = res.body.codigo;
+
+      // Solicitação "de outro usuário": o seed só tem um solicitante.
+      const alheio = await prisma.solicitacao.create({
+        data: {
+          titulo: `Alheio ${marcador}`,
+          descricao: 'Outro dono',
+          categoriaId: 2,
+          usuarioId: a.usuario.id,
+        },
+      });
+      codigoAlheio = alheio.codigo;
+    });
+
+    afterAll(async () => {
+      await app
+        .get(PrismaService)
+        .solicitacao.deleteMany({ where: { titulo: { contains: marcador } } });
+    });
+
+    it('solicitante lista só as próprias, com solicitante e categoria', async () => {
+      const res = await listar(solicitante).expect(200);
+
+      expect(codigos(res.body)).toContain(codigoProprio);
+      expect(codigos(res.body)).not.toContain(codigoAlheio);
+      for (const item of res.body) {
+        expect(item.solicitante.id).toBe(idSolicitante);
+        expect(item.categoria).toEqual({ id: expect.any(Number), nome: expect.any(String) });
+        expect(item.usuario).toBeUndefined();
+      }
+    });
+
+    it('atendente lista todas', async () => {
+      const res = await listar(atendente).expect(200);
+
+      expect(codigos(res.body)).toEqual(
+        expect.arrayContaining([codigoProprio, codigoAlheio]),
+      );
+    });
+
+    it('busca livre acha por parte do título, por solicitante e por código', async () => {
+      const parteTitulo = await listar(atendente, `?q=notebook ${marcador.slice(0, 8)}`).expect(200);
+      expect(codigos(parteTitulo.body)).toContain(codigoProprio);
+      expect(codigos(parteTitulo.body)).not.toContain(codigoAlheio);
+
+      const porSolicitante = await listar(atendente, '?q=solicitante um').expect(200);
+      expect(codigos(porSolicitante.body)).toContain(codigoProprio);
+      expect(codigos(porSolicitante.body)).not.toContain(codigoAlheio);
+
+      const porCodigo = await listar(atendente, `?q=${codigoAlheio}`).expect(200);
+      expect(codigos(porCodigo.body)).toContain(codigoAlheio);
+    });
+
+    it('busca livre do solicitante nunca sai do próprio escopo', async () => {
+      const res = await listar(solicitante, `?q=${marcador}`).expect(200);
+
+      expect(codigos(res.body)).toEqual([codigoProprio]);
+    });
+
+    it('filtra por status, categoria e período', async () => {
+      const status = await listar(atendente, `?status=CONCLUIDO&q=${marcador}`).expect(200);
+      expect(status.body).toEqual([]);
+
+      const categoria = await listar(atendente, `?categoriaId=2&q=${marcador}`).expect(200);
+      expect(codigos(categoria.body)).toEqual([codigoAlheio]);
+
+      const hoje = new Date().toISOString().slice(0, 10);
+      const noPeriodo = await listar(atendente, `?dataInicio=${hoje}&dataFim=${hoje}&q=${marcador}`).expect(200);
+      expect(codigos(noPeriodo.body)).toEqual(
+        expect.arrayContaining([codigoProprio, codigoAlheio]),
+      );
+
+      const futuro = await listar(atendente, `?dataInicio=2999-01-01&q=${marcador}`).expect(200);
+      expect(futuro.body).toEqual([]);
+      const passado = await listar(atendente, `?dataFim=2000-01-01&q=${marcador}`).expect(200);
+      expect(passado.body).toEqual([]);
+    });
+
+    it('rejeita filtros inválidos com 400', async () => {
+      await listar(atendente, '?status=XYZ').expect(400);
+      await listar(atendente, '?categoriaId=abc').expect(400);
+      await listar(atendente, '?dataInicio=01/09/2026').expect(400);
+      await listar(atendente, '?dataInicio=2026-09-30&dataFim=2026-09-01').expect(400);
+      await listar(atendente, '?usuarioId=1').expect(400);
+    });
+
+    it('consulta os detalhes completos com o histórico', async () => {
+      const res = await request(app.getHttpServer())
+        .get(`/solicitacoes/${codigoProprio}`)
+        .set(solicitante)
+        .expect(200);
+
+      expect(res.body).toMatchObject({
+        codigo: codigoProprio,
+        descricao: 'Detalhe',
+        status: 'ABERTO',
+        categoria: { id: 1 },
+        solicitante: { id: idSolicitante, usuario: 'solicitante.um' },
+      });
+      expect(res.body.solicitante.senha).toBeUndefined();
+      expect(res.body.historico).toHaveLength(1);
+      expect(res.body.historico[0]).toMatchObject({
+        statusAnterior: null,
+        statusNovo: 'ABERTO',
+        usuario: { id: idSolicitante },
+      });
+    });
+
+    it('solicitante não consulta solicitação alheia; atendente consulta (403/200/404)', async () => {
+      await request(app.getHttpServer())
+        .get(`/solicitacoes/${codigoAlheio}`)
+        .set(solicitante)
+        .expect(403);
+      await request(app.getHttpServer())
+        .get(`/solicitacoes/${codigoAlheio}`)
+        .set(atendente)
+        .expect(200);
+      await request(app.getHttpServer())
+        .get('/solicitacoes/999999')
+        .set(atendente)
+        .expect(404);
+    });
+
+    it('exige autenticação (401)', async () => {
+      await request(app.getHttpServer()).get('/solicitacoes').expect(401);
+      await request(app.getHttpServer()).get('/solicitacoes/1').expect(401);
+      await request(app.getHttpServer())
+        .patch('/solicitacoes/1/status')
+        .send({ status: 'EM_ATENDIMENTO' })
+        .expect(401);
+    });
+
+    it('atendente avança o fluxo em sequência e gera o histórico', async () => {
+      const alterar = (status: string) =>
+        request(app.getHttpServer())
+          .patch(`/solicitacoes/${codigoProprio}/status`)
+          .set(atendente)
+          .send({ status });
+
+      await alterar('CONCLUIDO').expect(409); // não pode pular etapa
+      await alterar('ABERTO').expect(409); // nem repetir
+      const emAtendimento = await alterar('EM_ATENDIMENTO').expect(200);
+      expect(emAtendimento.body.status).toBe('EM_ATENDIMENTO');
+      await alterar('ABERTO').expect(409); // nem voltar
+      await alterar('CONCLUIDO').expect(200);
+      await alterar('EM_ATENDIMENTO').expect(409); // concluído é final
+
+      const { body } = await request(app.getHttpServer())
+        .get(`/solicitacoes/${codigoProprio}`)
+        .set(atendente)
+        .expect(200);
+      expect(body.status).toBe('CONCLUIDO');
+      expect(
+        body.historico.map((h: { statusAnterior: string | null; statusNovo: string }) => [
+          h.statusAnterior,
+          h.statusNovo,
+        ]),
+      ).toEqual([
+        [null, 'ABERTO'],
+        ['ABERTO', 'EM_ATENDIMENTO'],
+        ['EM_ATENDIMENTO', 'CONCLUIDO'],
+      ]);
+      expect(body.historico[1].usuario.nome).toBe('Atendente Um');
+    });
+
+    it('solicitante não altera status (403) e status inválido dá 400', async () => {
+      await request(app.getHttpServer())
+        .patch(`/solicitacoes/${codigoAlheio}/status`)
+        .set(solicitante)
+        .send({ status: 'EM_ATENDIMENTO' })
+        .expect(403);
+      await request(app.getHttpServer())
+        .patch(`/solicitacoes/${codigoAlheio}/status`)
+        .set(atendente)
+        .send({ status: 'INVALIDO' })
+        .expect(400);
+      await request(app.getHttpServer())
+        .patch('/solicitacoes/999999/status')
+        .set(atendente)
+        .send({ status: 'EM_ATENDIMENTO' })
+        .expect(404);
+    });
+  });
 });

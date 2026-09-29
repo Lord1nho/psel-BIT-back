@@ -12,11 +12,11 @@ Fonte: Memorial Técnico. O status de cada caso de uso é mantido pela skill `us
 | UC02 | Registrar Nova Solicitação | Solicitante | Finalizado |
 | UC03 | Editar Solicitação | Solicitante | Finalizado |
 | UC04 | Excluir Solicitação | Solicitante | Finalizado |
-| UC05 | Listar, Filtrar e Consultar Solicitações | Solicitante, Atendente | Pendente |
-| UC06 | Alterar Status da Solicitação | Atendente | Pendente |
+| UC05 | Listar, Filtrar e Consultar Solicitações | Solicitante, Atendente | Finalizado |
+| UC06 | Alterar Status da Solicitação | Atendente | Finalizado |
 | UC07 | Visualizar Dashboard | Atendente | Pendente |
 
-**Resumo:** 3 Pendentes · 0 Aguardando Validação · 4 Finalizados
+**Resumo:** 1 Pendente · 0 Aguardando Validação · 6 Finalizados
 
 ## Detalhamento
 

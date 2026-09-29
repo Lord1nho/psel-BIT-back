@@ -2,18 +2,22 @@ import {
   Body,
   Controller,
   Delete,
+  Get,
   HttpCode,
   Param,
   ParseIntPipe,
   Patch,
   Post,
+  Query,
 } from '@nestjs/common';
 import { UsuarioAtual } from '../common/decorators/usuario-atual.decorator.js';
 import { Roles } from '../common/decorators/roles.decorator.js';
 import type { UsuarioAutenticado } from '../common/types/usuario-autenticado.js';
 import { PerfilUsuario } from '../generated/prisma/client.js';
+import { AlterarStatusDto } from './dto/alterar-status.dto.js';
 import { CriarSolicitacaoDto } from './dto/criar-solicitacao.dto.js';
 import { EditarSolicitacaoDto } from './dto/editar-solicitacao.dto.js';
+import { FiltrarSolicitacoesDto } from './dto/filtrar-solicitacoes.dto.js';
 import { SolicitacoesService } from './solicitacoes.service.js';
 
 @Controller('solicitacoes')
@@ -29,6 +33,22 @@ export class SolicitacoesController {
     return this.solicitacoesService.criar(dto, usuario);
   }
 
+  @Get()
+  listar(
+    @Query() filtros: FiltrarSolicitacoesDto,
+    @UsuarioAtual() usuario: UsuarioAutenticado,
+  ) {
+    return this.solicitacoesService.listar(filtros, usuario);
+  }
+
+  @Get(':codigo')
+  consultar(
+    @Param('codigo', ParseIntPipe) codigo: number,
+    @UsuarioAtual() usuario: UsuarioAutenticado,
+  ) {
+    return this.solicitacoesService.consultar(codigo, usuario);
+  }
+
   @Patch(':codigo')
   @Roles(PerfilUsuario.SOLICITANTE)
   editar(
@@ -37,6 +57,16 @@ export class SolicitacoesController {
     @UsuarioAtual() usuario: UsuarioAutenticado,
   ) {
     return this.solicitacoesService.editar(codigo, dto, usuario);
+  }
+
+  @Patch(':codigo/status')
+  @Roles(PerfilUsuario.ATENDENTE)
+  alterarStatus(
+    @Param('codigo', ParseIntPipe) codigo: number,
+    @Body() dto: AlterarStatusDto,
+    @UsuarioAtual() usuario: UsuarioAutenticado,
+  ) {
+    return this.solicitacoesService.alterarStatus(codigo, dto, usuario);
   }
 
   @Delete(':codigo')
