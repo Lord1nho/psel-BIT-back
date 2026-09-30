@@ -481,6 +481,23 @@ describe('Autenticação e solicitações (e2e)', () => {
         ['EM_ATENDIMENTO', 'CONCLUIDO'],
       ]);
       expect(body.historico[1].usuario.nome).toBe('Atendente Um');
+
+      // A listagem deriva atendente, última atualização e conclusão do histórico.
+      const lista = await listar(atendente, `?q=${codigoProprio}`).expect(200);
+      const item = lista.body.find((s: { codigo: number }) => s.codigo === codigoProprio);
+      expect(item.atendente).toEqual({ id: expect.any(Number), nome: 'Atendente Um' });
+      expect(item.dataConclusao).toBe(body.historico[2].dataAlteracao);
+      expect(item.ultimaAtualizacao).toBe(body.historico[2].dataAlteracao);
+      expect(item.historico).toBeUndefined();
+    });
+
+    it('chamado sem atendimento aparece com atendente e conclusão nulos', async () => {
+      const lista = await listar(atendente, `?q=${codigoAlheio}`).expect(200);
+      const item = lista.body.find((s: { codigo: number }) => s.codigo === codigoAlheio);
+
+      expect(item.atendente).toBeNull();
+      expect(item.dataConclusao).toBeNull();
+      expect(item.ultimaAtualizacao).toBe(item.dataCriacao);
     });
 
     it('solicitante não altera status (403) e status inválido dá 400', async () => {

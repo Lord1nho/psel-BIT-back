@@ -132,10 +132,21 @@ Exemplo: `GET /solicitacoes?q=note&status=ABERTO&dataInicio=2026-09-01&dataFim=2
     "codigo": 3, "titulo": "Notebook lento", "status": "ABERTO",
     "dataCriacao": "2026-09-30T14:22:10.123Z",
     "categoria": { "id": 1, "nome": "TI" },
-    "solicitante": { "id": 2, "nome": "Solicitante Um" }
+    "solicitante": { "id": 2, "nome": "Solicitante Um" },
+    "atendente": { "id": 1, "nome": "Atendente Um" },
+    "ultimaAtualizacao": "2026-09-30T16:40:00.000Z",
+    "dataConclusao": "2026-09-30T16:40:00.000Z"
   }
 ]
 ```
+
+Colunas derivadas do histórico (não existem no detalhe como campos; lá use o array `historico`):
+
+| Campo | Significado |
+|---|---|
+| `atendente` | Quem moveu o chamado para `EM_ATENDIMENTO` (`{ id, nome }`); `null` se ainda não foi assumido. Se outro atendente concluir depois, continua sendo quem assumiu. |
+| `ultimaAtualizacao` | Horário da última **mudança de status**; igual a `dataCriacao` se nunca mudou. Editar título, descrição ou categoria **não** altera este campo. |
+| `dataConclusao` | Horário em que virou `CONCLUIDO`; `null` enquanto não concluído. |
 
 **Busca dinâmica:** chame esta mesma rota a cada digitação, com *debounce* de ~300 ms. Se o campo ficar vazio, **não envie `q=`** (volta à lista completa). O escopo do solicitante vale também na busca.
 

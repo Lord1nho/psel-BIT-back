@@ -219,6 +219,9 @@ describe('SolicitacoesService', () => {
       dataCriacao: new Date(),
       categoria: { id: 1, nome: 'TI' },
       usuario: { id: 5, nome: 'Solicitante Um' },
+      historico: [
+        { statusNovo: 'ABERTO', dataAlteracao: new Date('2026-09-30T10:00:00Z'), usuario: { id: 5, nome: 'Solicitante Um' } },
+      ],
     };
 
     const whereUsado = () => findMany.mock.calls[0][0].where;
@@ -234,6 +237,54 @@ describe('SolicitacoesService', () => {
         solicitante: { id: 5, nome: 'Solicitante Um' },
       });
       expect(resultado[0]).not.toHaveProperty('usuario');
+    });
+
+    it('chamado só aberto: sem atendente nem conclusão, atualizado na criação', async () => {
+      const [item] = await service.listar({}, atendente);
+
+      expect(item.atendente).toBeNull();
+      expect(item.dataConclusao).toBeNull();
+      expect(item.ultimaAtualizacao).toEqual(new Date('2026-09-30T10:00:00Z'));
+      expect(item).not.toHaveProperty('historico');
+    });
+
+    it('chamado em atendimento: atendente é quem assumiu e a atualização é a última mudança', async () => {
+      findMany.mockResolvedValue([
+        {
+          ...linha,
+          status: 'EM_ATENDIMENTO',
+          historico: [
+            ...linha.historico,
+            { statusNovo: 'EM_ATENDIMENTO', dataAlteracao: new Date('2026-09-30T11:00:00Z'), usuario: { id: 9, nome: 'Atendente Um' } },
+          ],
+        },
+      ]);
+
+      const [item] = await service.listar({}, atendente);
+
+      expect(item.atendente).toEqual({ id: 9, nome: 'Atendente Um' });
+      expect(item.ultimaAtualizacao).toEqual(new Date('2026-09-30T11:00:00Z'));
+      expect(item.dataConclusao).toBeNull();
+    });
+
+    it('chamado concluído: data de conclusão e última atualização coincidem; atendente é quem assumiu', async () => {
+      findMany.mockResolvedValue([
+        {
+          ...linha,
+          status: 'CONCLUIDO',
+          historico: [
+            ...linha.historico,
+            { statusNovo: 'EM_ATENDIMENTO', dataAlteracao: new Date('2026-09-30T11:00:00Z'), usuario: { id: 9, nome: 'Atendente Um' } },
+            { statusNovo: 'CONCLUIDO', dataAlteracao: new Date('2026-09-30T12:00:00Z'), usuario: { id: 8, nome: 'Atendente Dois' } },
+          ],
+        },
+      ]);
+
+      const [item] = await service.listar({}, atendente);
+
+      expect(item.atendente).toEqual({ id: 9, nome: 'Atendente Um' });
+      expect(item.dataConclusao).toEqual(new Date('2026-09-30T12:00:00Z'));
+      expect(item.ultimaAtualizacao).toEqual(new Date('2026-09-30T12:00:00Z'));
     });
 
     it('atendente enxerga todas (sem filtro de usuário)', async () => {

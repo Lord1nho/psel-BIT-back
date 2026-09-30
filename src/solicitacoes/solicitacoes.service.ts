@@ -79,13 +79,34 @@ export class SolicitacoesService {
         dataCriacao: true,
         categoria: { select: { id: true, nome: true } },
         usuario: { select: { id: true, nome: true } },
+        // No máximo 3 linhas por solicitação; só serve para derivar as colunas abaixo.
+        historico: {
+          orderBy: [{ dataAlteracao: 'asc' }, { id: 'asc' }],
+          select: {
+            statusNovo: true,
+            dataAlteracao: true,
+            usuario: { select: { id: true, nome: true } },
+          },
+        },
       },
     });
 
-    return solicitacoes.map(({ usuario: solicitante, ...resto }) => ({
-      ...resto,
-      solicitante,
-    }));
+    return solicitacoes.map(
+      ({ usuario: solicitante, historico, ...resto }) => ({
+        ...resto,
+        solicitante,
+        // Quem assumiu o chamado (ABERTO → EM_ATENDIMENTO); null se ainda não assumido.
+        atendente:
+          historico.find((h) => h.statusNovo === StatusSolicitacao.EM_ATENDIMENTO)
+            ?.usuario ?? null,
+        // Última mudança de status (edição de título/descrição não conta).
+        ultimaAtualizacao:
+          historico.at(-1)?.dataAlteracao ?? resto.dataCriacao,
+        dataConclusao:
+          historico.find((h) => h.statusNovo === StatusSolicitacao.CONCLUIDO)
+            ?.dataAlteracao ?? null,
+      }),
+    );
   }
 
   async consultar(codigo: number, usuario: UsuarioAutenticado) {
