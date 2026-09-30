@@ -1,8 +1,9 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { INestApplication, ValidationPipe } from '@nestjs/common';
+import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import { App } from 'supertest/types';
 import { AppModule } from './../src/app.module.js';
+import { configurarApp } from './../src/configurar-app.js';
 import { PrismaService } from './../src/prisma/prisma.service.js';
 
 // Requer Postgres no ar com migrations e seed aplicados.
@@ -15,18 +16,77 @@ describe('Autenticação e solicitações (e2e)', () => {
     }).compile();
 
     app = moduleFixture.createNestApplication();
-    app.useGlobalPipes(
-      new ValidationPipe({
-        whitelist: true,
-        forbidNonWhitelisted: true,
-        transform: true,
-      }),
-    );
+    process.env.CORS_ORIGIN = 'http://localhost:5173';
+    configurarApp(app);
     await app.init();
   });
 
   afterAll(async () => {
     await app.close();
+  });
+
+  describe('CORS', () => {
+    const preflight = (origem: string) =>
+      request(app.getHttpServer())
+        .options('/solicitacoes')
+        .set('Origin', origem)
+        .set('Access-Control-Request-Method', 'POST')
+        .set('Access-Control-Request-Headers', 'authorization,content-type');
+
+    it('libera a origem do front no preflight', async () => {
+      const res = await preflight('http://localhost:5173').expect(204);
+
+      expect(res.headers['access-control-allow-origin']).toBe(
+        'http://localhost:5173',
+      );
+      expect(res.headers['access-control-allow-headers']).toMatch(/authorization/i);
+      expect(res.headers['access-control-allow-methods']).toMatch(/PATCH/);
+    });
+
+    it('não libera outras origens', async () => {
+      const res = await preflight('http://outro-site.com');
+
+      expect(res.headers['access-control-allow-origin']).toBeUndefined();
+    });
+  });
+
+  describe('GET /categorias', () => {
+    it('exige autenticação (401)', async () => {
+      await request(app.getHttpServer()).get('/categorias').expect(401);
+    });
+
+    it('lista as categorias ativas com id e nome, para qualquer perfil', async () => {
+      for (const usuario of ['solicitante.um', 'atendente.um']) {
+        const { body } = await login(usuario);
+        const res = await request(app.getHttpServer())
+          .get('/categorias')
+          .set('Authorization', `Bearer ${body.accessToken}`)
+          .expect(200);
+
+        expect(res.body).toEqual(
+          expect.arrayContaining([{ id: 1, nome: 'TI' }]),
+        );
+        for (const categoria of res.body) {
+          expect(Object.keys(categoria).sort()).toEqual(['id', 'nome']);
+        }
+      }
+    });
+
+    it('não lista categoria inativa', async () => {
+      const prisma = app.get(PrismaService);
+      const { body } = await login('solicitante.um');
+      await prisma.categoria.update({ where: { id: 5 }, data: { ativa: false } });
+      try {
+        const res = await request(app.getHttpServer())
+          .get('/categorias')
+          .set('Authorization', `Bearer ${body.accessToken}`)
+          .expect(200);
+
+        expect(res.body.map((c: { id: number }) => c.id)).not.toContain(5);
+      } finally {
+        await prisma.categoria.update({ where: { id: 5 }, data: { ativa: true } });
+      }
+    });
   });
 
   const login = (usuario: string, senha = '123456') =>

@@ -38,8 +38,11 @@ Copie `.env.example` para `.env` antes de tudo.
 
 ## Estrutura
 - `src/prisma/`: `PrismaService` (único acesso ao banco, injetado nos demais services) e `PrismaModule` (global).
+- `src/configurar-app.ts`: `ValidationPipe` global e CORS (origens em `CORS_ORIGIN`, separadas por vírgula; vazio = nenhuma), usado por `main.ts` e pelo e2e.
+- `src/auth/`, `src/categorias/` (`GET /categorias`, só ativas) e `src/solicitacoes/`: um módulo por área, com controller fino e regra no service.
 - `prisma/`: schema, migrations, `seed.ts`.
 - `docs/use-cases.md`: casos de uso e burndown.
+- `docs/api.md`: contrato da API para o front (URLs, payloads, erros). Atualize junto com qualquer mudança de endpoint.
 
 ## Fluxo de trabalho
 - **Casos de uso:** o andamento fica em `docs/use-cases.md`, atualizado pela skill `use-cases-burndown`. Status: `Pendente`, `Aguardando Validação`, `Finalizado`. **Finalizado só com aprovação explícita do usuário**; ao terminar de codar, marque `Aguardando Validação`.
