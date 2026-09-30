@@ -4,6 +4,7 @@ import request from 'supertest';
 import { App } from 'supertest/types';
 import { AppModule } from './../src/app.module.js';
 import { configurarApp } from './../src/configurar-app.js';
+import { hojeNoFuso, somarDias } from './../src/dashboard/periodo.js';
 import { PrismaService } from './../src/prisma/prisma.service.js';
 
 // Requer Postgres no ar com migrations e seed aplicados.
@@ -516,6 +517,286 @@ describe('Autenticação e solicitações (e2e)', () => {
         .set(atendente)
         .send({ status: 'EM_ATENDIMENTO' })
         .expect(404);
+    });
+  });
+
+  describe('dashboard (UC07)', () => {
+    type Auth = { Authorization: string };
+    const marcador = `DASH${Date.now()}`;
+    const FUSO = 'America/Sao_Paulo';
+    let solicitante: Auth;
+    let atendente: Auth;
+    let idSolicitante: number;
+    let idAtendente: number;
+    let codigoConcluido: number;
+
+    const dash = (auth: Auth, query = '') =>
+      request(app.getHttpServer()).get(`/dashboard${query}`).set(auth);
+    const soma = (itens: Record<string, unknown>[], campo: string) =>
+      itens.reduce((acc, item) => acc + (item[campo] as number), 0);
+    const contarPorStatus = async (where: object) => {
+      const prisma = app.get(PrismaService);
+      const [total, abertas, emAtendimento, concluidas] = await Promise.all([
+        prisma.solicitacao.count({ where }),
+        prisma.solicitacao.count({ where: { ...where, status: 'ABERTO' } }),
+        prisma.solicitacao.count({ where: { ...where, status: 'EM_ATENDIMENTO' } }),
+        prisma.solicitacao.count({ where: { ...where, status: 'CONCLUIDO' } }),
+      ]);
+      return { total, abertas, emAtendimento, concluidas };
+    };
+
+    beforeAll(async () => {
+      const prisma = app.get(PrismaService);
+      const { body: s } = await login('solicitante.um');
+      const { body: a } = await login('atendente.um');
+      solicitante = { Authorization: `Bearer ${s.accessToken}` };
+      atendente = { Authorization: `Bearer ${a.accessToken}` };
+      idSolicitante = s.usuario.id;
+      idAtendente = a.usuario.id;
+
+      const criar = async (categoriaId: number) => {
+        const res = await request(app.getHttpServer())
+          .post('/solicitacoes')
+          .set(solicitante)
+          .send({ titulo: `Dash ${marcador}`, descricao: 'x', categoriaId })
+          .expect(201);
+        return res.body.codigo as number;
+      };
+      const avancar = (codigo: number, status: string) =>
+        request(app.getHttpServer())
+          .patch(`/solicitacoes/${codigo}/status`)
+          .set(atendente)
+          .send({ status })
+          .expect(200);
+
+      // Um aberto (TI), um em atendimento (RH) e um concluído (TI), todos do solicitante.
+      await criar(1);
+      await avancar(await criar(2), 'EM_ATENDIMENTO');
+      codigoConcluido = await criar(1);
+      await avancar(codigoConcluido, 'EM_ATENDIMENTO');
+      await avancar(codigoConcluido, 'CONCLUIDO');
+
+      // Uma solicitação de outro dono (o seed só tem um solicitante).
+      await prisma.solicitacao.create({
+        data: {
+          titulo: `Dash alheio ${marcador}`,
+          descricao: 'Outro dono',
+          categoriaId: 2,
+          usuarioId: idAtendente,
+        },
+      });
+    });
+
+    afterAll(async () => {
+      await app
+        .get(PrismaService)
+        .solicitacao.deleteMany({ where: { titulo: { contains: marcador } } });
+    });
+
+    it('solicitante vê só as próprias e os totais batem com o banco', async () => {
+      const res = await dash(solicitante).expect(200);
+
+      expect(res.body.escopo).toBe('proprias');
+      expect(res.body.totais).toEqual(
+        await contarPorStatus({ usuarioId: idSolicitante }),
+      );
+      expect(res.body.totais.total).toBeGreaterThanOrEqual(3);
+    });
+
+    it('atendente (geral) vê tudo, incluindo a solicitação de outro dono', async () => {
+      const res = await dash(atendente).expect(200);
+
+      expect(res.body.escopo).toBe('geral');
+      expect(res.body.totais).toEqual(await contarPorStatus({}));
+      const doSolicitante = await dash(solicitante).expect(200);
+      expect(res.body.totais.total).toBeGreaterThan(doSolicitante.body.totais.total);
+    });
+
+    it('escopo "meus" conta só o que o atendente assumiu (e abertas é sempre 0)', async () => {
+      const res = await dash(atendente, '?escopo=meus').expect(200);
+
+      const esperado = await contarPorStatus({
+        historico: { some: { statusNovo: 'EM_ATENDIMENTO', usuarioId: idAtendente } },
+      });
+      expect(res.body.escopo).toBe('meus');
+      expect(res.body.totais).toEqual(esperado);
+      expect(res.body.totais.abertas).toBe(0);
+      expect(res.body.totais.total).toBeGreaterThanOrEqual(2);
+    });
+
+    it('porStatus e porCategoria são coerentes com os totais', async () => {
+      const { body } = await dash(atendente).expect(200);
+
+      expect(body.porStatus).toEqual([
+        { status: 'ABERTO', total: body.totais.abertas },
+        { status: 'EM_ATENDIMENTO', total: body.totais.emAtendimento },
+        { status: 'CONCLUIDO', total: body.totais.concluidas },
+      ]);
+      expect(soma(body.porCategoria, 'total')).toBe(body.totais.total);
+      expect(body.porCategoria.map((c: { nome: string }) => c.nome)).toEqual(
+        expect.arrayContaining(['TI', 'RH', 'Compras', 'Financeiro', 'Infraestrutura']),
+      );
+    });
+
+    it.each([
+      ['7d', 7],
+      ['30d', 30],
+    ])('preset %s: série com %i dias terminando hoje, sem lacunas e consistente', async (periodo, dias) => {
+      const { body } = await dash(solicitante, `?periodo=${periodo}`).expect(200);
+      const hoje = hojeNoFuso(FUSO);
+
+      expect(body.periodo).toMatchObject({
+        tipo: periodo,
+        dataFim: hoje,
+        dataInicio: somarDias(hoje, -(dias - 1)),
+        agrupamento: 'dia',
+        fuso: FUSO,
+      });
+      expect(body.serie).toHaveLength(dias);
+      expect(body.serie[dias - 1].data).toBe(hoje);
+      expect(body.serie[dias - 1].criadas).toBeGreaterThanOrEqual(3);
+      expect(body.serie[dias - 1].concluidas).toBeGreaterThanOrEqual(1);
+      // Tudo no período é a mesma coleção de solicitações.
+      expect(soma(body.serie, 'criadas')).toBe(body.totais.total);
+      expect(soma(body.serie, 'concluidas')).toBe(body.totais.concluidas);
+      expect(soma(body.porCategoria, 'total')).toBe(body.totais.total);
+    });
+
+    it('preset "tudo" começa na primeira solicitação e fecha com os totais globais', async () => {
+      const { body } = await dash(solicitante, '?periodo=tudo').expect(200);
+      const padrao = await dash(solicitante).expect(200);
+
+      expect(body.periodo.tipo).toBe('tudo');
+      expect(body.periodo.dataFim).toBe(hojeNoFuso(FUSO));
+      expect(body.totais).toEqual(await contarPorStatus({ usuarioId: idSolicitante }));
+      expect(soma(body.serie, 'criadas')).toBe(body.totais.total);
+      expect(padrao.body).toEqual(body); // "tudo" é o padrão
+    });
+
+    it('período personalizado no passado exclui os chamados de hoje, com zeros preenchidos', async () => {
+      const { body } = await dash(
+        atendente,
+        '?dataInicio=2000-01-01&dataFim=2000-01-05',
+      ).expect(200);
+
+      expect(body.periodo.tipo).toBe('personalizado');
+      expect(body.totais).toEqual({ total: 0, abertas: 0, emAtendimento: 0, concluidas: 0 });
+      expect(body.serie).toEqual(
+        ['01', '02', '03', '04', '05'].map((d) => ({
+          data: `2000-01-${d}`,
+          criadas: 0,
+          concluidas: 0,
+        })),
+      );
+      expect(body.porCategoria.length).toBeGreaterThanOrEqual(5);
+      expect(soma(body.porCategoria, 'total')).toBe(0);
+    });
+
+    it('período personalizado que inclui hoje contém os chamados criados', async () => {
+      const hoje = hojeNoFuso(FUSO);
+      const { body } = await dash(
+        solicitante,
+        `?dataInicio=${somarDias(hoje, -1)}&dataFim=${hoje}`,
+      ).expect(200);
+
+      expect(body.serie).toHaveLength(2);
+      expect(body.totais.total).toBeGreaterThanOrEqual(3);
+    });
+
+    it('filtro por setor restringe painéis, categorias e série', async () => {
+      const geral = await dash(solicitante, '?periodo=30d').expect(200);
+      const ti = geral.body.porCategoria.find((c: { categoriaId: number }) => c.categoriaId === 1);
+
+      const { body } = await dash(solicitante, '?periodo=30d&categoriaId=1').expect(200);
+
+      expect(body.porCategoria).toEqual([ti]);
+      expect(body.totais).toEqual({
+        total: ti.total,
+        abertas: ti.abertas,
+        emAtendimento: ti.emAtendimento,
+        concluidas: ti.concluidas,
+      });
+      expect(soma(body.serie, 'criadas')).toBe(ti.total);
+    });
+
+    it('agrupamento por semana alinha os pontos às segundas-feiras', async () => {
+      const { body } = await dash(solicitante, '?periodo=30d&agrupamento=semana').expect(200);
+
+      expect(body.periodo.agrupamento).toBe('semana');
+      expect(body.serie.length).toBeGreaterThanOrEqual(5);
+      expect(body.serie.length).toBeLessThanOrEqual(6);
+      for (const ponto of body.serie) {
+        expect(new Date(`${ponto.data}T00:00:00Z`).getUTCDay()).toBe(1); // segunda
+      }
+      expect(soma(body.serie, 'criadas')).toBe(body.totais.total);
+    });
+
+    it('agrupamento por mês alinha os pontos ao dia 1', async () => {
+      const { body } = await dash(solicitante, '?periodo=tudo&agrupamento=mes').expect(200);
+
+      for (const ponto of body.serie) expect(ponto.data.endsWith('-01')).toBe(true);
+      expect(soma(body.serie, 'criadas')).toBe(body.totais.total);
+    });
+
+    it('fuso UTC é aceito e informado na resposta', async () => {
+      const { body } = await dash(solicitante, '?periodo=7d&fuso=UTC').expect(200);
+
+      expect(body.periodo.fuso).toBe('UTC');
+      expect(body.periodo.dataFim).toBe(hojeNoFuso('UTC'));
+    });
+
+    it('rejeita parâmetros inválidos com 400', async () => {
+      const invalidos = [
+        '?periodo=90d',
+        '?periodo=7d&dataInicio=2026-09-01',
+        '?dataInicio=2026-09-30&dataFim=2026-09-01',
+        '?dataInicio=2026-02-30',
+        '?dataInicio=01/09/2026',
+        '?categoriaId=abc',
+        '?agrupamento=ano',
+        '?fuso=Marte/Olympus',
+        '?dataInicio=2020-01-01&dataFim=2026-09-30&agrupamento=dia', // pontos demais
+        '?foo=1',
+      ];
+      for (const query of invalidos) {
+        await dash(atendente, query).expect(400);
+      }
+    });
+
+    it('solicitante não pode usar o filtro escopo (400)', async () => {
+      await dash(solicitante, '?escopo=meus').expect(400);
+      await dash(solicitante, '?escopo=geral').expect(400);
+    });
+
+    it('exige autenticação (401)', async () => {
+      await request(app.getHttpServer()).get('/dashboard').expect(401);
+    });
+
+    it('revalida por ETag: mesma resposta devolve 304 sem corpo e sem cache compartilhado', async () => {
+      const primeira = await dash(solicitante, '?periodo=7d').expect(200);
+
+      expect(primeira.headers['cache-control']).toBe('private, no-cache');
+      expect(primeira.headers.etag).toBeDefined();
+
+      const segunda = await request(app.getHttpServer())
+        .get('/dashboard?periodo=7d')
+        .set(solicitante)
+        .set('If-None-Match', primeira.headers.etag)
+        .expect(304);
+      expect(segunda.text).toBeFalsy();
+
+      // Mudou um dado: o ETag deixa de valer e o corpo novo volta.
+      await request(app.getHttpServer())
+        .post('/solicitacoes')
+        .set(solicitante)
+        .send({ titulo: `Dash ${marcador}`, descricao: 'novo', categoriaId: 1 })
+        .expect(201);
+      const terceira = await request(app.getHttpServer())
+        .get('/dashboard?periodo=7d')
+        .set(solicitante)
+        .set('If-None-Match', primeira.headers.etag)
+        .expect(200);
+      expect(terceira.body.totais.total).toBe(primeira.body.totais.total + 1);
     });
   });
 });

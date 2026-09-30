@@ -39,6 +39,7 @@ Contrato da API por funcionalidade. Os casos de uso estão em [`use-cases.md`](u
 | Consultar detalhe | só as próprias | qualquer uma |
 | Editar / excluir | só as próprias em `ABERTO` | não (403) |
 | Alterar status | não (403) | sim |
+| Dashboard | sim (só as próprias) | sim (geral, ou só as que assumiu) |
 
 Mostre editar e excluir só quando `status === 'ABERTO'` e a solicitação for do usuário; o servidor valida de qualquer forma.
 
@@ -212,4 +213,59 @@ Erros: **400** (status fora do enum); **403** (perfil SOLICITANTE); **404**; **4
 
 ## 10. Dashboard
 
-Em breve (UC07).
+### `GET /dashboard` (SOLICITANTE e ATENDENTE)
+
+Uma única rota alimenta painéis numéricos e gráficos (feita para Recharts). **Tudo na resposta obedece ao período escolhido**, e o escopo vem do token: o solicitante vê só as próprias solicitações; o atendente vê todas (ou só as que assumiu).
+
+**Query (todos opcionais, combináveis):**
+
+| Parâmetro | Valores | Observação |
+|---|---|---|
+| `periodo` | `tudo` (padrão), `30d`, `7d` | `7d`/`30d` = hoje e os 6/29 dias anteriores. `tudo` = da primeira solicitação até hoje. |
+| `dataInicio`, `dataFim` | `AAAA-MM-DD` | Período personalizado, ambos inclusivos. **Não combine com `periodo`** (400). Com só um deles, o outro assume (início = primeira solicitação; fim = hoje). |
+| `categoriaId` | inteiro | Filtra por setor. |
+| `agrupamento` | `auto` (padrão), `dia`, `semana`, `mes` | `auto`: até 62 dias por dia; até 364 por semana; acima disso por mês. Máximo de 400 pontos na série (400 se passar). |
+| `escopo` | `geral` (padrão), `meus` | **Só atendente** (solicitante recebe 400). `meus` = chamados que ele assumiu. |
+| `fuso` | nome IANA, padrão `America/Sao_Paulo` | Define onde começa e termina cada dia. |
+
+Exemplos: `GET /dashboard?periodo=7d` · `GET /dashboard?periodo=30d&categoriaId=1` · `GET /dashboard?dataInicio=2026-09-01&dataFim=2026-09-30&agrupamento=semana` · `GET /dashboard?escopo=meus` (atendente).
+
+**200**
+```json
+{
+  "periodo": { "tipo": "30d", "dataInicio": "2026-09-01", "dataFim": "2026-09-30", "agrupamento": "dia", "fuso": "America/Sao_Paulo" },
+  "escopo": "geral",
+  "totais": { "total": 120, "abertas": 40, "emAtendimento": 30, "concluidas": 50 },
+  "porStatus": [
+    { "status": "ABERTO", "total": 40 },
+    { "status": "EM_ATENDIMENTO", "total": 30 },
+    { "status": "CONCLUIDO", "total": 50 }
+  ],
+  "porCategoria": [
+    { "categoriaId": 1, "nome": "TI", "total": 60, "abertas": 20, "emAtendimento": 15, "concluidas": 25 }
+  ],
+  "serie": [
+    { "data": "2026-09-01", "criadas": 4, "concluidas": 2 }
+  ]
+}
+```
+
+| Campo | Para que usar |
+|---|---|
+| `periodo` | Intervalo **realmente usado** (útil para o subtítulo dos gráficos e para preencher o filtro de datas no "Tudo"). `tipo` é `tudo`, `30d`, `7d` ou `personalizado`. |
+| `escopo` | `proprias` (solicitante), `geral` ou `meus` (atendente). |
+| `totais` | Os 4 painéis numéricos. |
+| `porStatus` | Sempre os 3 status (zero incluído): `<PieChart>` direto. |
+| `porCategoria` | Uma linha por setor, com as contagens por status: `<BarChart>` empilhado (`abertas`, `emAtendimento`, `concluidas`). Traz todas as categorias ativas, mesmo com zero, para as barras não "pularem"; com `categoriaId` vem só a escolhida. |
+| `serie` | Linha do tempo **sem lacunas** (dias/semanas/meses sem movimento vêm com 0): `<LineChart>`/`<BarChart>` direto, `dataKey="data"`. Em `semana`, `data` é a segunda-feira; em `mes`, o dia 1. |
+
+**Regra do período:** uma solicitação pertence ao período pela **data de criação**, e todos os blocos usam essa mesma coleção. Por isso `sum(serie.criadas) = totais.total` e `sum(porCategoria.total) = totais.total`. `serie.concluidas` conta, dessas solicitações, as concluídas dentro da janela (por data de conclusão); nos presets, que terminam hoje, ela também soma `totais.concluidas`.
+
+**Atenção no `escopo=meus`:** `abertas` é sempre 0, porque um chamado aberto ainda não tem atendente.
+
+**Performance no front:**
+- Uma chamada por mudança de filtro (preset, datas, setor, escopo). Com TanStack Query: `queryKey: ['dashboard', filtros]`, `placeholderData: keepPreviousData` (troca de filtro sem piscar) e `staleTime` curto (~30 s). Invalide `['dashboard']` depois de criar, excluir ou mudar o status de uma solicitação.
+- A resposta traz `Cache-Control: private, no-cache` e `ETag`: o navegador revalida a cada chamada e, se nada mudou, recebe **304** sem corpo (o `fetch` já devolve o conteúdo em cache). Dado nunca fica desatualizado.
+- Clique numa barra de setor pode aplicar `categoriaId`; os botões **Tudo / 30 dias / 7 dias** enviam `periodo`; o seletor de datas envia `dataInicio`/`dataFim` (e deixa de enviar `periodo`).
+
+Erros: **400** para `periodo`/`agrupamento`/`escopo` fora dos valores, `periodo` junto de datas, data inexistente, `dataInicio` maior que `dataFim`, `categoriaId` não numérico, `fuso` inválido, parâmetro desconhecido, série com mais de 400 pontos ou `escopo` enviado por solicitante; **401** sem token.

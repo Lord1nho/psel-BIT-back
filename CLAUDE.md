@@ -32,14 +32,15 @@ Copie `.env.example` para `.env` antes de tudo.
 ## Regras de negócio essenciais
 - Todas as rotas exigem autenticação, exceto login.
 - Solicitante: edita/exclui só solicitações **próprias** com status `ABERTO`; lista só as próprias.
-- Atendente: lista todas, altera status, vê o dashboard (total + abertas/em atendimento/concluídas). **Não abre chamados**: só atende.
+- Atendente: lista todas, altera status e vê o dashboard geral (ou só o que assumiu). **Não abre chamados**: só atende.
+- Dashboard (`GET /dashboard`): solicitante e atendente. Solicitante vê só as próprias; atendente vê tudo ou `escopo=meus`. Tudo respeita o período (`tudo`/`30d`/`7d`/datas) e o setor escolhidos.
 - Criar solicitação: status `ABERTO`, data e usuário automáticos, e grava histórico `null → ABERTO`.
 - Status muda só em sequência `ABERTO → EM_ATENDIMENTO → CONCLUIDO`, sempre com registro em `historico_solicitacoes`.
 
 ## Estrutura
 - `src/prisma/`: `PrismaService` (único acesso ao banco, injetado nos demais services) e `PrismaModule` (global).
 - `src/configurar-app.ts`: `ValidationPipe` global e CORS (origens em `CORS_ORIGIN`, separadas por vírgula; vazio = nenhuma), usado por `main.ts` e pelo e2e.
-- `src/auth/`, `src/categorias/` (`GET /categorias`, só ativas) e `src/solicitacoes/`: um módulo por área, com controller fino e regra no service.
+- `src/auth/`, `src/categorias/` (`GET /categorias`, só ativas), `src/solicitacoes/` e `src/dashboard/`: um módulo por área, com controller fino e regra no service. O dashboard usa SQL agregado (`$queryRaw` com `Prisma.sql`, valores sempre como parâmetros) e funções puras de período em `periodo.ts`.
 - `prisma/`: schema, migrations, `seed.ts`.
 - `docs/use-cases.md`: casos de uso e burndown.
 - `docs/api.md`: contrato da API para o front (URLs, payloads, erros). Atualize junto com qualquer mudança de endpoint.

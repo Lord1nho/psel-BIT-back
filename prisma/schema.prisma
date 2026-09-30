@@ -59,7 +59,7 @@ model Solicitacao {
   usuario   Usuario                @relation(fields: [usuarioId], references: [id])
   historico HistoricoSolicitacao[]
 
-  @@index([usuarioId])
+  @@index([usuarioId, dataCriacao])
   @@index([categoriaId])
   @@index([status])
   @@index([dataCriacao])
@@ -79,5 +79,6 @@ model HistoricoSolicitacao {
 
   @@index([solicitacaoCodigo])
   @@index([usuarioId])
+  @@index([statusNovo, solicitacaoCodigo])
   @@map("historico_solicitacoes")
 }
