@@ -8,15 +8,15 @@ Fonte: Memorial Técnico. O status de cada caso de uso é mantido pela skill `us
 
 | Código | Caso de uso | Atores | Status |
 |--------|-------------|--------|--------|
-| UC01 | Efetuar Autenticação (Login e Logout) | Solicitante, Atendente | Pendente |
-| UC02 | Registrar Nova Solicitação | Solicitante (e Atendente) | Pendente |
-| UC03 | Editar Solicitação | Solicitante | Pendente |
-| UC04 | Excluir Solicitação | Solicitante | Pendente |
-| UC05 | Listar, Filtrar e Consultar Solicitações | Solicitante, Atendente | Pendente |
-| UC06 | Alterar Status da Solicitação | Atendente | Pendente |
-| UC07 | Visualizar Dashboard | Atendente | Pendente |
+| UC01 | Efetuar Autenticação (Login e Logout) | Solicitante, Atendente | Finalizado |
+| UC02 | Registrar Nova Solicitação | Solicitante | Finalizado |
+| UC03 | Editar Solicitação | Solicitante | Finalizado |
+| UC04 | Excluir Solicitação | Solicitante | Finalizado |
+| UC05 | Listar, Filtrar e Consultar Solicitações | Solicitante, Atendente | Finalizado |
+| UC06 | Alterar Status da Solicitação | Atendente | Finalizado |
+| UC07 | Visualizar Dashboard | Solicitante, Atendente | Aguardando Validação |
 
-**Resumo:** 7 Pendentes · 0 Aguardando Validação · 0 Finalizados
+**Resumo:** 0 Pendentes · 1 Aguardando Validação · 6 Finalizados
 
 ## Detalhamento
 
@@ -27,10 +27,11 @@ Fonte: Memorial Técnico. O status de cada caso de uso é mantido pela skill `us
 - **Decisão técnica:** JWT com expiração de 1h + bcrypt; logout descarta o token no cliente.
 
 ### UC02 - Registrar Nova Solicitação
-- **Atores:** Solicitante (e opcionalmente o Atendente, caso também precise abrir chamados).
+- **Atores:** Solicitante. O Atendente não abre solicitações, apenas atende.
 - **Descrição:** Preenche Título, Descrição e seleciona a Categoria (TI, RH, Compras, Financeiro, Infraestrutura).
 - **Regras de negócio:** O sistema preenche a data de criação, vincula o usuário solicitante e define o status inicial estritamente como "Aberto".
 - **Decisão técnica:** grava também a linha inicial `null → ABERTO` em `historico_solicitacoes`. Categoria com `ativa=false` não pode ser escolhida.
+- **Nota de ajuste:** após a primeira aprovação, o ator foi restringido a Solicitante (Atendente não abre chamados); reaprovado em seguida.
 
 ### UC03 - Editar Solicitação
 - **Atores:** Solicitante.
@@ -55,6 +56,8 @@ Fonte: Memorial Técnico. O status de cada caso de uso é mantido pela skill `us
 - **Decisão técnica:** transições estritamente sequenciais; cada mudança gera registro em `historico_solicitacoes` (status anterior, novo, autor, data).
 
 ### UC07 - Visualizar Dashboard
-- **Atores:** Atendente.
-- **Descrição:** Painel com indicadores simples de operação.
-- **Regras de negócio:** Exibe o total global de solicitações e a quantidade de abertas, em atendimento e concluídas. Acesso restrito ao perfil Atendente.
+- **Atores:** Solicitante e Atendente.
+- **Descrição:** Painel com indicadores simples de operação: quantidade total de solicitações e quantidade de abertas, em atendimento e concluídas, com divisão por setor (categoria) e evolução no tempo. Períodos rápidos (Tudo, 30 dias, 7 dias) e filtro por datas.
+- **Regras de negócio:** O Solicitante vê apenas os números das suas próprias solicitações; o Atendente vê o total global, ou apenas o que ele assumiu (filtro pessoal). Tudo o que aparece respeita o período e o setor escolhidos.
+- **Decisão técnica:** `GET /dashboard` devolve agregados calculados no banco (um SQL por bloco, índices em `solicitacoes(usuario_id, data_criacao)` e `historico_solicitacoes(status_novo, solicitacao_codigo)`), séries já preenchidas com zeros e `ETag`/304 para revalidar barato. Contrato em [`api.md`](api.md).
+- **Nota de ajuste:** o Memorial previa o dashboard só para o Atendente; o acesso do Solicitante (às próprias solicitações) foi incluído a pedido do usuário.
