@@ -11,7 +11,8 @@ Backend do portal de solicitações (processo seletivo BIT). Fonte dos requisito
 
 ## Comandos
 ```bash
-docker compose up -d --wait        # sobe o Postgres
+docker compose up --build          # tudo (db + api + front) para execução/avaliação; ver README
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --wait db   # só o Postgres (porta 5433), dev no host
 npx prisma migrate dev             # aplica/gera migrations
 npx prisma db seed                 # categorias + usuários de teste
 npx prisma generate                # gera o client em src/generated (não versionado)
