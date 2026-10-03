@@ -12,11 +12,11 @@ Fonte: Memorial Técnico. O status de cada caso de uso é mantido pela skill `us
 | UC02 | Registrar Nova Solicitação | Solicitante | Finalizado |
 | UC03 | Editar Solicitação | Solicitante | Finalizado |
 | UC04 | Excluir Solicitação | Solicitante | Finalizado |
-| UC05 | Listar, Filtrar e Consultar Solicitações | Solicitante, Atendente | Finalizado |
-| UC06 | Alterar Status da Solicitação | Atendente | Finalizado |
+| UC05 | Listar, Filtrar e Consultar Solicitações | Solicitante, Atendente | Aguardando Validação |
+| UC06 | Alterar Status da Solicitação | Atendente | Aguardando Validação |
 | UC07 | Visualizar Dashboard | Solicitante, Atendente | Aguardando Validação |
 
-**Resumo:** 0 Pendentes · 1 Aguardando Validação · 6 Finalizados
+**Resumo:** 0 Pendentes · 3 Aguardando Validação · 4 Finalizados
 
 ## Detalhamento
 
@@ -48,12 +48,15 @@ Fonte: Memorial Técnico. O status de cada caso de uso é mantido pela skill `us
 - **Atores:** Solicitante e Atendente.
 - **Descrição:** Listagem com código, título, categoria, solicitante, data de abertura e status. Filtros por período, categoria, status e texto livre (título). Ao clicar num registro, exibe os detalhes completos.
 - **Regras de negócio:** O Solicitante vê apenas as suas próprias solicitações; o Atendente vê as de todos os usuários.
+- **Filtro de atendente (3 opções):** "apenas os meus atendimentos" (`atendente=meus`, resolvido pelo token e exclusivo do atendente), "todos" (`todos`, sem filtro, inclui os chamados dos colegas) e "sem atendente" (`sem`, chamados que ninguém assumiu). "Atendente" é quem moveu o chamado para Em Atendimento. Roda no servidor, junto da paginação.
+- **Nota de ajuste:** o filtro de atendente com 3 opções foi acrescentado após a aprovação; o UC voltou para validação.
 
 ### UC06 - Alterar Status da Solicitação
 - **Atores:** Atendente.
 - **Descrição:** Avança o fluxo do chamado: "Aberto" → "Em Atendimento" → "Concluído".
-- **Regras de negócio:** Exclusivo do perfil Atendente.
-- **Decisão técnica:** transições estritamente sequenciais; cada mudança gera registro em `historico_solicitacoes` (status anterior, novo, autor, data).
+- **Regras de negócio:** Exclusivo do perfil Atendente. **Bloqueio de concorrência:** quem assume o chamado ("Aberto" → "Em Atendimento") passa a ser o responsável, e só ele pode alterar o status dali em diante (concluir). Qualquer atendente pode assumir um chamado aberto, mas o primeiro a chegar vence. (Quando existirem comentários, comentar também fará o atendente assumir; fora do escopo por ora.)
+- **Decisão técnica:** transições estritamente sequenciais; cada mudança gera registro em `historico_solicitacoes` (status anterior, novo, autor, data). O responsável é derivado do histórico (autor da transição para Em Atendimento), sem coluna nova. A condição vai na própria escrita (`UPDATE ... WHERE`), então duas assunções simultâneas nunca geram dois responsáveis. Outro atendente que tente alterar recebe 403; quem perde a corrida pela assunção recebe 409.
+- **Nota de ajuste:** o bloqueio de concorrência foi acrescentado após a aprovação; o UC voltou para validação. Limitação conhecida: não há como liberar ou transferir um chamado se o responsável estiver ausente.
 
 ### UC07 - Visualizar Dashboard
 - **Atores:** Solicitante e Atendente.

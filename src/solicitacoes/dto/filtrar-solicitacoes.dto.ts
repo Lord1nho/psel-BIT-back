@@ -1,6 +1,7 @@
 import { Transform, Type } from 'class-transformer';
 import {
   IsEnum,
+  IsIn,
   IsInt,
   IsOptional,
   IsString,
@@ -12,6 +13,10 @@ import {
 import { StatusSolicitacao } from '../../generated/prisma/client.js';
 
 const DATA_ISO = /^\d{4}-\d{2}-\d{2}$/;
+
+// As 3 opções do seletor de atendente: só os meus, todos (sem filtro) e sem atendente.
+export const FILTROS_ATENDENTE = ['meus', 'todos', 'sem'] as const;
+export type FiltroAtendente = (typeof FILTROS_ATENDENTE)[number];
 
 export const TAMANHO_PADRAO = 20;
 export const TAMANHO_MAXIMO = 100;
@@ -41,7 +46,14 @@ export class FiltrarSolicitacoesDto {
   @Min(1)
   categoriaId?: number;
 
-  // Atendente que assumiu o chamado (mesma definição da coluna "atendente" da listagem).
+  // meus = chamados que o atendente logado assumiu (resolvido pelo token, só atendente);
+  // sem = chamados que ninguém assumiu; todos (ou ausente) = sem filtro.
+  @IsOptional()
+  @IsIn(FILTROS_ATENDENTE)
+  atendente?: FiltroAtendente;
+
+  // Um atendente específico (mesma definição da coluna "atendente" da listagem).
+  // Não combina com "atendente".
   @IsOptional()
   @Type(() => Number)
   @IsInt()
