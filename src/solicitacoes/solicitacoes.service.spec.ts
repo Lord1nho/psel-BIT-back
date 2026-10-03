@@ -408,6 +408,79 @@ describe('SolicitacoesService', () => {
       expect(whereUsado()).not.toHaveProperty('historico');
     });
 
+    describe('filtro de atendente: meus, todos e sem', () => {
+      const assumiu = { statusNovo: 'EM_ATENDIMENTO' };
+
+      it('"meus" usa o atendente do token (o front não manda id)', async () => {
+        await service.listar({ atendente: 'meus' }, atendente);
+
+        const esperado = { some: { ...assumiu, usuarioId: 9 } };
+        expect(whereUsado()).toEqual({ historico: esperado });
+        // O total conta com o mesmo filtro, senão a paginação mentiria.
+        expect(contar).toHaveBeenCalledWith({ where: { historico: esperado } });
+      });
+
+      it('"sem" pega os chamados que ninguém assumiu', async () => {
+        await service.listar({ atendente: 'sem' }, atendente);
+
+        expect(whereUsado()).toEqual({ historico: { none: assumiu } });
+        expect(contar).toHaveBeenCalledWith({
+          where: { historico: { none: assumiu } },
+        });
+      });
+
+      it('"todos" e ausente não filtram por atendente', async () => {
+        await service.listar({ atendente: 'todos' }, atendente);
+        expect(whereUsado()).toEqual({});
+
+        findMany.mockClear();
+        await service.listar({}, atendente);
+        expect(whereUsado()).toEqual({});
+      });
+
+      it('"sem" combina com status, setor e o escopo do solicitante', async () => {
+        await service.listar(
+          { atendente: 'sem', status: ['ABERTO'], categoriaId: 2 },
+          autor,
+        );
+
+        expect(whereUsado()).toEqual({
+          usuarioId: 5,
+          status: { in: ['ABERTO'] },
+          categoriaId: 2,
+          historico: { none: assumiu },
+        });
+      });
+
+      it('solicitante pode usar "sem" e "todos", mas não "meus" (400)', async () => {
+        await expect(service.listar({ atendente: 'sem' }, autor)).resolves.toBeDefined();
+        await expect(service.listar({ atendente: 'todos' }, autor)).resolves.toBeDefined();
+
+        findMany.mockClear();
+        await expect(
+          service.listar({ atendente: 'meus' }, autor),
+        ).rejects.toBeInstanceOf(BadRequestException);
+        expect(findMany).not.toHaveBeenCalled();
+      });
+
+      it('"atendente" junto de "atendenteId" é rejeitado (400)', async () => {
+        for (const atendenteFiltro of ['meus', 'sem', 'todos'] as const) {
+          await expect(
+            service.listar({ atendente: atendenteFiltro, atendenteId: 8 }, atendente),
+          ).rejects.toBeInstanceOf(BadRequestException);
+        }
+        expect(findMany).not.toHaveBeenCalled();
+      });
+
+      it('"atendenteId" (atendente específico) continua funcionando sozinho', async () => {
+        await service.listar({ atendenteId: 8 }, atendente);
+
+        expect(whereUsado()).toEqual({
+          historico: { some: { ...assumiu, usuarioId: 8 } },
+        });
+      });
+    });
+
     it('o total respeita o escopo do solicitante e os filtros', async () => {
       await service.listar({ status: ['ABERTO'], categoriaId: 2 }, autor);
 
@@ -539,82 +612,224 @@ describe('SolicitacoesService', () => {
     });
   });
 
-  describe('alterarStatus', () => {
-    it.each([
-      ['ABERTO', 'EM_ATENDIMENTO'],
-      ['EM_ATENDIMENTO', 'CONCLUIDO'],
-    ])('avança de %s para %s e grava o histórico', async (atual, novo) => {
-      findSolicitacao.mockResolvedValue({ ...solicitacaoAberta, status: atual });
-      updateMany.mockResolvedValue({ count: 1 });
-      findSolicitacaoOrThrow.mockResolvedValue({ codigo: 10, status: novo });
+  describe('consultar: atendente responsável', () => {
+    const base = { codigo: 10, usuarioId: 5, usuario: { id: 5, nome: 'S', usuario: 's' } };
 
-      const resultado = await service.alterarStatus(
-        10,
-        { status: novo as never },
-        atendente,
-      );
+    it('traz o atendente que assumiu o chamado', async () => {
+      findSolicitacao.mockResolvedValue({
+        ...base,
+        historico: [
+          { statusNovo: 'ABERTO', usuario: { id: 5, nome: 'S' } },
+          { statusNovo: 'EM_ATENDIMENTO', usuario: { id: 9, nome: 'Atendente Um' } },
+        ],
+      });
 
-      expect(updateMany).toHaveBeenCalledWith({
-        where: { codigo: 10, status: atual },
-        data: { status: novo },
-      });
-      expect(criarHistorico).toHaveBeenCalledWith({
-        data: {
-          solicitacaoCodigo: 10,
-          usuarioId: 9,
-          statusAnterior: atual,
-          statusNovo: novo,
-        },
-      });
-      expect(resultado).toEqual({ codigo: 10, status: novo });
+      const resultado = await service.consultar(10, atendente);
+
+      expect(resultado.atendente).toEqual({ id: 9, nome: 'Atendente Um' });
     });
 
-    it.each([
-      ['ABERTO', 'CONCLUIDO'],
-      ['ABERTO', 'ABERTO'],
-      ['EM_ATENDIMENTO', 'ABERTO'],
-      ['EM_ATENDIMENTO', 'EM_ATENDIMENTO'],
-    ])('rejeita a transição %s → %s com 409', async (atual, novo) => {
-      findSolicitacao.mockResolvedValue({ ...solicitacaoAberta, status: atual });
+    it('é null enquanto ninguém assumiu', async () => {
+      findSolicitacao.mockResolvedValue({
+        ...base,
+        historico: [{ statusNovo: 'ABERTO', usuario: { id: 5, nome: 'S' } }],
+      });
 
-      await expect(
-        service.alterarStatus(10, { status: novo as never }, atendente),
-      ).rejects.toBeInstanceOf(ConflictException);
-      expect(updateMany).not.toHaveBeenCalled();
-      expect(criarHistorico).not.toHaveBeenCalled();
+      const resultado = await service.consultar(10, atendente);
+
+      expect(resultado.atendente).toBeNull();
     });
+  });
 
-    it.each(['ABERTO', 'EM_ATENDIMENTO', 'CONCLUIDO'])(
-      'solicitação CONCLUIDO não aceita mudança para %s',
-      async (novo) => {
-        findSolicitacao.mockResolvedValue({
-          ...solicitacaoAberta,
-          status: 'CONCLUIDO',
+  describe('alterarStatus (dono do chamado)', () => {
+    const outroAtendente = { id: 8, usuario: 'atendente.dois', perfil: 'ATENDENTE' } as const;
+    const dono = { id: 9, nome: 'Atendente Um' };
+    const aberto = { codigo: 10, usuarioId: 5, status: 'ABERTO', historico: [] };
+    const emAtendimento = {
+      codigo: 10,
+      usuarioId: 5,
+      status: 'EM_ATENDIMENTO',
+      historico: [{ usuario: dono }],
+    };
+    const gravouHistorico = () => criarHistorico.mock.calls.length > 0;
+
+    describe('assumir (ABERTO → EM_ATENDIMENTO)', () => {
+      it('qualquer atendente pode assumir e passa a ser o responsável', async () => {
+        findSolicitacao.mockResolvedValue(aberto);
+        updateMany.mockResolvedValue({ count: 1 });
+        findSolicitacaoOrThrow.mockResolvedValue({
+          codigo: 10,
+          status: 'EM_ATENDIMENTO',
+          historico: [{ usuario: dono }],
         });
+
+        const resultado = await service.alterarStatus(10, { status: 'EM_ATENDIMENTO' }, atendente);
+
+        // Sem condição de dono: o chamado ainda não tem responsável.
+        expect(updateMany).toHaveBeenCalledWith({
+          where: { codigo: 10, status: 'ABERTO' },
+          data: { status: 'EM_ATENDIMENTO' },
+        });
+        expect(criarHistorico).toHaveBeenCalledWith({
+          data: {
+            solicitacaoCodigo: 10,
+            usuarioId: 9,
+            statusAnterior: 'ABERTO',
+            statusNovo: 'EM_ATENDIMENTO',
+          },
+        });
+        expect(resultado).toMatchObject({ codigo: 10, status: 'EM_ATENDIMENTO', atendente: dono });
+        expect(resultado).not.toHaveProperty('historico');
+      });
+
+      it('outro atendente também pode assumir um chamado aberto', async () => {
+        findSolicitacao.mockResolvedValue(aberto);
+        updateMany.mockResolvedValue({ count: 1 });
+        findSolicitacaoOrThrow.mockResolvedValue({
+          codigo: 10,
+          status: 'EM_ATENDIMENTO',
+          historico: [{ usuario: { id: 8, nome: 'Atendente Dois' } }],
+        });
+
+        const resultado = await service.alterarStatus(10, { status: 'EM_ATENDIMENTO' }, outroAtendente);
+
+        expect(criarHistorico.mock.calls[0][0].data.usuarioId).toBe(8);
+        expect(resultado.atendente).toEqual({ id: 8, nome: 'Atendente Dois' });
+      });
+
+      it('quem perdeu a corrida pela assunção recebe 409 e nada é gravado', async () => {
+        findSolicitacao.mockResolvedValue(aberto);
+        updateMany.mockResolvedValue({ count: 0 });
+
+        const tentativa = service.alterarStatus(10, { status: 'EM_ATENDIMENTO' }, outroAtendente);
+
+        await expect(tentativa).rejects.toBeInstanceOf(ConflictException);
+        await expect(tentativa).rejects.toThrow(/já foi assumido por outro atendente/);
+        expect(gravouHistorico()).toBe(false);
+      });
+    });
+
+    describe('concluir (EM_ATENDIMENTO → CONCLUIDO)', () => {
+      it('o responsável conclui, e a condição de dono vai na própria escrita', async () => {
+        findSolicitacao.mockResolvedValue(emAtendimento);
+        updateMany.mockResolvedValue({ count: 1 });
+        findSolicitacaoOrThrow.mockResolvedValue({
+          codigo: 10,
+          status: 'CONCLUIDO',
+          historico: [{ usuario: dono }],
+        });
+
+        const resultado = await service.alterarStatus(10, { status: 'CONCLUIDO' }, atendente);
+
+        expect(updateMany).toHaveBeenCalledWith({
+          where: {
+            codigo: 10,
+            status: 'EM_ATENDIMENTO',
+            historico: { some: { statusNovo: 'EM_ATENDIMENTO', usuarioId: 9 } },
+          },
+          data: { status: 'CONCLUIDO' },
+        });
+        expect(criarHistorico).toHaveBeenCalledWith({
+          data: {
+            solicitacaoCodigo: 10,
+            usuarioId: 9,
+            statusAnterior: 'EM_ATENDIMENTO',
+            statusNovo: 'CONCLUIDO',
+          },
+        });
+        expect(resultado).toMatchObject({ status: 'CONCLUIDO', atendente: dono });
+      });
+
+      it('outro atendente é barrado (403) com o nome do responsável, sem tocar no banco', async () => {
+        findSolicitacao.mockResolvedValue(emAtendimento);
+
+        const tentativa = service.alterarStatus(10, { status: 'CONCLUIDO' }, outroAtendente);
+
+        await expect(tentativa).rejects.toBeInstanceOf(ForbiddenException);
+        await expect(tentativa).rejects.toThrow(/Atendente Um/);
+        expect(updateMany).not.toHaveBeenCalled();
+        expect(gravouHistorico()).toBe(false);
+      });
+
+      it('se o status mudou entre a checagem e a escrita, 409 sem histórico', async () => {
+        findSolicitacao.mockResolvedValue(emAtendimento);
+        updateMany.mockResolvedValue({ count: 0 });
+
+        await expect(
+          service.alterarStatus(10, { status: 'CONCLUIDO' }, atendente),
+        ).rejects.toBeInstanceOf(ConflictException);
+        expect(gravouHistorico()).toBe(false);
+      });
+
+      it('dado legado sem registro de assunção: qualquer atendente conclui', async () => {
+        findSolicitacao.mockResolvedValue({ ...emAtendimento, historico: [] });
+        updateMany.mockResolvedValue({ count: 1 });
+        findSolicitacaoOrThrow.mockResolvedValue({ codigo: 10, status: 'CONCLUIDO', historico: [] });
+
+        const resultado = await service.alterarStatus(10, { status: 'CONCLUIDO' }, outroAtendente);
+
+        // Sem dono, não há condição de dono no where (senão o chamado ficaria travado).
+        expect(updateMany).toHaveBeenCalledWith({
+          where: { codigo: 10, status: 'EM_ATENDIMENTO' },
+          data: { status: 'CONCLUIDO' },
+        });
+        expect(resultado.atendente).toBeNull();
+      });
+    });
+
+    describe('transições inválidas e leitura do dono', () => {
+      it.each([
+        ['ABERTO', 'CONCLUIDO'],
+        ['ABERTO', 'ABERTO'],
+        ['EM_ATENDIMENTO', 'ABERTO'],
+        ['EM_ATENDIMENTO', 'EM_ATENDIMENTO'],
+      ])('rejeita %s → %s com 409', async (atual, novo) => {
+        findSolicitacao.mockResolvedValue(atual === 'ABERTO' ? aberto : emAtendimento);
 
         await expect(
           service.alterarStatus(10, { status: novo as never }, atendente),
         ).rejects.toBeInstanceOf(ConflictException);
-        expect(criarHistorico).not.toHaveBeenCalled();
-      },
-    );
+        expect(updateMany).not.toHaveBeenCalled();
+        expect(gravouHistorico()).toBe(false);
+      });
 
-    it('retorna 404 quando a solicitação não existe', async () => {
-      findSolicitacao.mockResolvedValue(null);
+      it.each(['ABERTO', 'EM_ATENDIMENTO', 'CONCLUIDO'])(
+        'chamado concluído não aceita mudança para %s',
+        async (novo) => {
+          findSolicitacao.mockResolvedValue({ ...emAtendimento, status: 'CONCLUIDO' });
 
-      await expect(
-        service.alterarStatus(99, { status: 'EM_ATENDIMENTO' }, atendente),
-      ).rejects.toBeInstanceOf(NotFoundException);
-    });
+          await expect(
+            service.alterarStatus(10, { status: novo as never }, atendente),
+          ).rejects.toBeInstanceOf(ConflictException);
+          expect(gravouHistorico()).toBe(false);
+        },
+      );
 
-    it('retorna 409 sem gravar histórico quando outro atendente chegou primeiro', async () => {
-      findSolicitacao.mockResolvedValue(solicitacaoAberta);
-      updateMany.mockResolvedValue({ count: 0 });
+      it('retorna 404 quando o chamado não existe', async () => {
+        findSolicitacao.mockResolvedValue(null);
 
-      await expect(
-        service.alterarStatus(10, { status: 'EM_ATENDIMENTO' }, atendente),
-      ).rejects.toBeInstanceOf(ConflictException);
-      expect(criarHistorico).not.toHaveBeenCalled();
+        await expect(
+          service.alterarStatus(99, { status: 'EM_ATENDIMENTO' }, atendente),
+        ).rejects.toBeInstanceOf(NotFoundException);
+      });
+
+      it('busca o dono pela primeira assunção registrada no histórico', async () => {
+        findSolicitacao.mockResolvedValue(aberto);
+        updateMany.mockResolvedValue({ count: 1 });
+        findSolicitacaoOrThrow.mockResolvedValue({ codigo: 10, status: 'EM_ATENDIMENTO', historico: [] });
+
+        await service.alterarStatus(10, { status: 'EM_ATENDIMENTO' }, atendente);
+
+        expect(findSolicitacao).toHaveBeenCalledWith({
+          where: { codigo: 10 },
+          include: {
+            historico: expect.objectContaining({
+              where: { statusNovo: 'EM_ATENDIMENTO' },
+              take: 1,
+            }),
+          },
+        });
+      });
     });
   });
 });

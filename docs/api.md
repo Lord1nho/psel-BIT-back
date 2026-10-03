@@ -38,7 +38,7 @@ Contrato da API por funcionalidade. Os casos de uso estão em [`use-cases.md`](u
 | Listar | só as próprias | todas |
 | Consultar detalhe | só as próprias | qualquer uma |
 | Editar / excluir | só as próprias em `ABERTO` | não (403) |
-| Alterar status | não (403) | sim |
+| Alterar status | não (403) | sim (assumir: qualquer atendente; depois, só o responsável) |
 | Dashboard | sim (só as próprias) | sim (geral, ou só as que assumiu) |
 
 Mostre editar e excluir só quando `status === 'ABERTO'` e a solicitação for do usuário; o servidor valida de qualquer forma.
@@ -122,7 +122,8 @@ Todos os parâmetros de query são opcionais e combináveis:
 |---|---|---|
 | `status` | um ou vários: `ABERTO`, `EM_ATENDIMENTO`, `CONCLUIDO` | Vários: separados por vírgula (`status=ABERTO,EM_ATENDIMENTO`) ou o parâmetro repetido (`status=ABERTO&status=EM_ATENDIMENTO`). Ausente ou vazio = todos. Repetidos são ignorados. |
 | `categoriaId` | inteiro | |
-| `atendenteId` | inteiro | **Novo.** Só os chamados que esse atendente assumiu (o mesmo `atendente` que aparece na linha). Chamados nunca assumidos não entram. Roda no servidor, então vale para todas as páginas. |
+| `atendente` | `meus`, `todos` ou `sem` | **As 3 opções do seletor de atendente** (veja abaixo). |
+| `atendenteId` | inteiro | Um atendente específico: só os chamados que ele assumiu. **Não combina com `atendente`** (400). |
 | `q` | texto, até 100 caracteres | Busca em parte do título, no nome ou usuário do solicitante e, se for só número, no código. Não diferencia maiúsculas. |
 | `dataInicio` | `AAAA-MM-DD` | |
 | `dataFim` | `AAAA-MM-DD` | Inclusiva. Não pode ser anterior a `dataInicio`. |
@@ -132,7 +133,8 @@ Todos os parâmetros de query são opcionais e combináveis:
 Exemplos:
 - `GET /solicitacoes?status=ABERTO,EM_ATENDIMENTO&pagina=1&tamanho=20` (tela inicial: abertos e em atendimento)
 - `GET /solicitacoes?q=note&status=ABERTO&dataInicio=2026-09-01&dataFim=2026-09-30&pagina=2`
-- `GET /solicitacoes?atendenteId=1&status=EM_ATENDIMENTO` (chamados em atendimento do atendente 1)
+- `GET /solicitacoes?atendente=meus&status=EM_ATENDIMENTO` (meus chamados em atendimento)
+- `GET /solicitacoes?atendente=sem` (chamados que ninguém assumiu ainda)
 
 **200**: um envelope com a página pedida e os totais:
 ```json
@@ -174,7 +176,19 @@ Colunas derivadas do histórico (não existem no detalhe como campos; lá use o 
 | `ultimaAtualizacao` | Horário da última **mudança de status**; igual a `dataCriacao` se nunca mudou. Editar título, descrição ou categoria **não** altera este campo. |
 | `dataConclusao` | Horário em que virou `CONCLUIDO`; `null` enquanto não concluído. |
 
-**Filtro por atendente:** envie `atendenteId` com o `id` do atendente (o `usuario.id` devolvido no login serve para "só os meus"). Não filtre por atendente no front sobre a lista: com a paginação ele só enxergaria a página atual. O mesmo vale para qualquer outro filtro: use os parâmetros acima, que contam no `total`.
+**Filtro de atendente (3 opções):**
+
+| Opção na tela | Envie | O que volta |
+|---|---|---|
+| Apenas os meus atendimentos | `atendente=meus` | Os chamados que **o atendente logado** assumiu. O servidor usa o token, então não precisa mandar o id. |
+| Todos | `atendente=todos` (ou não envie nada) | Sem filtro: inclui os chamados dos colegas. |
+| Sem atendente | `atendente=sem` | Os chamados que ninguém assumiu (a coluna `atendente` vem `null`). |
+
+- **"Atendente" de um chamado** é quem o moveu para `EM_ATENDIMENTO`; é o mesmo `atendente` que aparece em cada linha.
+- `atendente=meus` é **exclusivo do atendente**: o solicitante recebe 400. `sem` e `todos` funcionam para ele, dentro dos próprios chamados.
+- Combina com os outros filtros e com a paginação: o `total` acompanha. `sem` junto de `status=EM_ATENDIMENTO` ou `CONCLUIDO` devolve vazio, porque esses status sempre têm atendente.
+- Mudou a opção, volte para `pagina=1`.
+- Não filtre por atendente no front sobre a lista: com a paginação ele só enxergaria a página atual. O mesmo vale para qualquer outro filtro: use os parâmetros acima, que contam no `total`.
 
 **Filtro padrão da tela:** o backend **não** filtra nada por padrão. Para abrir a tela mostrando só "Aberto + Em atendimento", o front envia `status=ABERTO,EM_ATENDIMENTO`; para "Todos", não envia `status`.
 
@@ -182,7 +196,7 @@ Colunas derivadas do histórico (não existem no detalhe como campos; lá use o 
 
 **Cache HTTP:** a resposta traz `Cache-Control: private, no-cache` e `ETag`. O navegador revalida a cada chamada e, se nada mudou naquela página e naquele conjunto de filtros, recebe **304** sem corpo. O dado nunca fica desatualizado, e o conteúdo é por usuário (`private`).
 
-Erros: **400** para `status` fora do enum, `categoriaId` ou `atendenteId` inválidos (não inteiro ou menor que 1), data fora do formato, período invertido, `pagina` menor que 1 ou não inteira, `tamanho` menor que 1, maior que 100 ou não inteiro, ou parâmetro desconhecido.
+Erros: **400** para `status` fora do enum, `atendente` fora de `meus`/`todos`/`sem`, `atendente` junto de `atendenteId`, `atendente=meus` enviado por solicitante, `categoriaId` ou `atendenteId` inválidos (não inteiro ou menor que 1), data fora do formato, período invertido, `pagina` menor que 1 ou não inteira, `tamanho` menor que 1, maior que 100 ou não inteiro, ou parâmetro desconhecido.
 
 ## 6. Detalhe e histórico
 
@@ -196,6 +210,7 @@ Erros: **400** para `status` fora do enum, `categoriaId` ou `atendenteId` invál
   "dataCriacao": "2026-09-30T14:22:10.123Z", "usuarioId": 2,
   "categoria": { "id": 1, "nome": "TI", "ativa": true },
   "solicitante": { "id": 2, "nome": "Solicitante Um", "usuario": "solicitante.um" },
+  "atendente": { "id": 1, "nome": "Atendente Um" },
   "historico": [
     { "statusAnterior": null, "statusNovo": "ABERTO",
       "dataAlteracao": "2026-09-30T14:22:10.123Z", "usuario": { "id": 2, "nome": "Solicitante Um" } },
@@ -204,6 +219,8 @@ Erros: **400** para `status` fora do enum, `categoriaId` ou `atendenteId` invál
   ]
 }
 ```
+
+`atendente` é o atendente responsável (quem assumiu o chamado), ou `null` se ninguém assumiu. É com ele que o front compara o usuário logado para habilitar a mudança de status (seção 9).
 
 O histórico vem em ordem cronológica; `statusAnterior` é `null` na primeira linha. Erros: **403** (solicitante consultando solicitação alheia), **404**.
 
@@ -234,13 +251,29 @@ Sem corpo. **204** sem conteúdo; o histórico é removido junto. Erros: **403**
 { "status": "EM_ATENDIMENTO" }
 ```
 
-**200**: a solicitação atualizada, no formato do "Criar". A sequência é estrita e **cada mudança gera uma linha no histórico**:
+**200**: a solicitação atualizada, no formato do "Criar", mais `atendente: { id, nome }` (o responsável) e sem o array `historico`. **Cada mudança gera uma linha no histórico.**
 
-`ABERTO → EM_ATENDIMENTO → CONCLUIDO`
+A sequência é estrita: `ABERTO → EM_ATENDIMENTO → CONCLUIDO`. Pular etapa, voltar, repetir ou alterar um chamado concluído dá **409**, e a `message` informa o próximo status permitido.
 
-Pular etapa, voltar, repetir ou alterar uma solicitação concluída dá **409**; a `message` informa o próximo status permitido. No front, use **um único botão "avançar"** que envia o próximo status, e nenhum botão quando `CONCLUIDO`.
+**Quem assumiu é o dono do chamado.** Depois que um atendente assume (`ABERTO → EM_ATENDIMENTO`), só ele pode alterar o status dali em diante:
 
-Erros: **400** (status fora do enum); **403** (perfil SOLICITANTE); **404**; **409** (transição inválida, ou outro atendente alterou antes).
+| Situação | Quem pode | Quem tentar sem poder recebe |
+|---|---|---|
+| `ABERTO → EM_ATENDIMENTO` | Qualquer atendente (o primeiro a chegar assume) | Perdeu a corrida: **409** "já foi assumido por outro atendente; atualize a tela" |
+| `EM_ATENDIMENTO → CONCLUIDO` | **Só o atendente responsável** | Outro atendente: **403** "Somente o atendente responsável (*Nome*) pode alterar o status deste chamado" |
+| `CONCLUIDO` | Ninguém | **409** |
+| Qualquer mudança | Solicitante | **403** |
+
+Se dois atendentes clicarem em "Em atendimento" ao mesmo tempo, **só um** assume (200) e o outro recebe 409. O dono nunca muda depois disso.
+
+**Como o front deve usar (seletor de status + salvar):**
+- Para habilitar a mudança, compare `atendente.id` (da listagem ou do detalhe) com o `usuario.id` do login:
+  - chamado `ABERTO` (`atendente` é `null`): habilitado para qualquer atendente, e a única opção é `EM_ATENDIMENTO`;
+  - chamado `EM_ATENDIMENTO`: habilitado só se `atendente.id` for o do usuário logado, e a única opção é `CONCLUIDO`; para os demais atendentes, desabilitado (mostre quem é o responsável);
+  - chamado `CONCLUIDO`: sem mudança.
+- Trate o **403** (alguém assumiu antes de a tela atualizar) e o **409** (perdeu a corrida): mostre a mensagem e recarregue o chamado.
+
+Erros: **400** (status fora do enum); **403** (perfil SOLICITANTE, ou atendente que não é o responsável); **404**; **409** (transição inválida, ou outro atendente alterou antes).
 
 ## 10. Dashboard
 

@@ -29,6 +29,14 @@ const PROXIMO_STATUS: Partial<Record<StatusSolicitacao, StatusSolicitacao>> = {
   [StatusSolicitacao.EM_ATENDIMENTO]: StatusSolicitacao.CONCLUIDO,
 };
 
+// Primeira assunção do chamado (→ EM_ATENDIMENTO): quem a fez é o atendente responsável.
+const ASSUNCAO = {
+  where: { statusNovo: StatusSolicitacao.EM_ATENDIMENTO },
+  orderBy: [{ dataAlteracao: 'asc' }, { id: 'asc' }],
+  take: 1,
+  select: { usuario: { select: { id: true, nome: true } } },
+} satisfies Prisma.Solicitacao$historicoArgs;
+
 const UM_DIA_MS = 24 * 60 * 60 * 1000;
 
 @Injectable()
@@ -67,16 +75,8 @@ export class SolicitacoesService {
     }
     if (filtros.status?.length) where.status = { in: filtros.status };
     if (filtros.categoriaId) where.categoriaId = filtros.categoriaId;
-    if (filtros.atendenteId) {
-      // Atendente = quem moveu o chamado para EM_ATENDIMENTO (a transição é sequencial,
-      // então há no máximo uma linha dessas por chamado).
-      where.historico = {
-        some: {
-          statusNovo: StatusSolicitacao.EM_ATENDIMENTO,
-          usuarioId: filtros.atendenteId,
-        },
-      };
-    }
+    const filtroAtendente = this.filtrarPorAtendente(filtros, usuario);
+    if (filtroAtendente) where.historico = filtroAtendente;
     if (filtros.q) where.OR = this.montarBuscaLivre(filtros.q);
 
     const periodo = this.montarPeriodo(filtros.dataInicio, filtros.dataFim);
@@ -150,7 +150,7 @@ export class SolicitacoesService {
         categoria: true,
         usuario: { select: { id: true, nome: true, usuario: true } },
         historico: {
-          orderBy: { dataAlteracao: 'asc' },
+          orderBy: [{ dataAlteracao: 'asc' }, { id: 'asc' }],
           select: {
             statusAnterior: true,
             statusNovo: true,
@@ -171,7 +171,15 @@ export class SolicitacoesService {
     }
 
     const { usuario: solicitante, ...resto } = solicitacao;
-    return { ...resto, solicitante };
+    return {
+      ...resto,
+      solicitante,
+      // Atendente responsável (quem assumiu); null se ninguém assumiu ainda.
+      atendente:
+        solicitacao.historico.find(
+          (h) => h.statusNovo === StatusSolicitacao.EM_ATENDIMENTO,
+        )?.usuario ?? null,
+    };
   }
 
   async editar(
@@ -222,7 +230,13 @@ export class SolicitacoesService {
     { status: novo }: AlterarStatusDto,
     atendente: UsuarioAutenticado,
   ) {
-    const { status: atual } = await this.buscarOuFalhar(codigo);
+    const solicitacao = await this.prisma.solicitacao.findUnique({
+      where: { codigo },
+      include: { historico: ASSUNCAO },
+    });
+    if (!solicitacao) throw new NotFoundException('Solicitação não encontrada');
+    const { status: atual } = solicitacao;
+    const dono = solicitacao.historico[0]?.usuario ?? null;
 
     const permitido = PROXIMO_STATUS[atual];
     if (!permitido) {
@@ -234,15 +248,39 @@ export class SolicitacoesService {
       );
     }
 
+    // Quem assumiu é o dono do chamado: só ele altera o status dali em diante.
+    // (Sem registro de assunção, caso de dado legado, qualquer atendente pode concluir.)
+    const exigeDono =
+      atual === StatusSolicitacao.EM_ATENDIMENTO && dono !== null;
+    if (exigeDono && dono.id !== atendente.id) {
+      throw new ForbiddenException(
+        `Somente o atendente responsável (${dono.nome}) pode alterar o status deste chamado`,
+      );
+    }
+
     return this.prisma.$transaction(async (tx) => {
-      // Se outro atendente mudou o status antes, nada é gravado.
+      // A condição vai na própria escrita: se outro atendente assumiu ou mudou o status
+      // entre a checagem e o update, nada é gravado.
       const { count } = await tx.solicitacao.updateMany({
-        where: { codigo, status: atual },
+        where: {
+          codigo,
+          status: atual,
+          ...(exigeDono && {
+            historico: {
+              some: {
+                statusNovo: StatusSolicitacao.EM_ATENDIMENTO,
+                usuarioId: atendente.id,
+              },
+            },
+          }),
+        },
         data: { status: novo },
       });
       if (count === 0) {
         throw new ConflictException(
-          'O status da solicitação foi alterado por outro atendente',
+          atual === StatusSolicitacao.ABERTO
+            ? 'Este chamado já foi assumido por outro atendente; atualize a tela'
+            : 'O status da solicitação foi alterado; atualize a tela',
         );
       }
 
@@ -255,11 +293,41 @@ export class SolicitacoesService {
         },
       });
 
-      return tx.solicitacao.findUniqueOrThrow({
-        where: { codigo },
-        include: { categoria: true },
-      });
+      const { historico, ...atualizada } =
+        await tx.solicitacao.findUniqueOrThrow({
+          where: { codigo },
+          include: { categoria: true, historico: ASSUNCAO },
+        });
+      return { ...atualizada, atendente: historico[0]?.usuario ?? null };
     });
+  }
+
+  // Atendente do chamado = quem o moveu para EM_ATENDIMENTO. A transição é sequencial,
+  // então há no máximo uma linha dessas por chamado: "sem" = nenhuma, "meus" = a do
+  // atendente logado, atendenteId = a de um atendente específico.
+  private filtrarPorAtendente(
+    { atendente, atendenteId }: FiltrarSolicitacoesDto,
+    usuario: UsuarioAutenticado,
+  ): Prisma.HistoricoSolicitacaoListRelationFilter | undefined {
+    if (atendente && atendenteId) {
+      throw new BadRequestException(
+        'Use "atendente" ou "atendenteId", não os dois juntos',
+      );
+    }
+    if (atendente === 'meus' && usuario.perfil !== PerfilUsuario.ATENDENTE) {
+      throw new BadRequestException(
+        'O filtro "atendente=meus" é exclusivo do atendente',
+      );
+    }
+
+    const assumiu = (usuarioId?: number) => ({
+      statusNovo: StatusSolicitacao.EM_ATENDIMENTO,
+      ...(usuarioId && { usuarioId }),
+    });
+    if (atendente === 'sem') return { none: assumiu() };
+    if (atendente === 'meus') return { some: assumiu(usuario.id) };
+    if (atendenteId) return { some: assumiu(atendenteId) };
+    return undefined;
   }
 
   private montarBuscaLivre(q: string): Prisma.SolicitacaoWhereInput[] {

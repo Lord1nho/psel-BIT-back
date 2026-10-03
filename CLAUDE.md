@@ -32,11 +32,12 @@ Copie `.env.example` para `.env` antes de tudo.
 ## Regras de negócio essenciais
 - Todas as rotas exigem autenticação, exceto login.
 - Solicitante: edita/exclui só solicitações **próprias** com status `ABERTO`; lista só as próprias.
-- Listagem (`GET /solicitacoes`): paginada (`pagina`, `tamanho` até 100) e devolve `{ itens, total, pagina, tamanho, totalPaginas }`; `status` aceita vários valores (`ABERTO,EM_ATENDIMENTO`) e `atendenteId` filtra por quem assumiu o chamado. Todo filtro da listagem roda no servidor (o front não filtra sobre a página). O backend não filtra status por padrão: o front envia o padrão.
+- Listagem (`GET /solicitacoes`): paginada (`pagina`, `tamanho` até 100) e devolve `{ itens, total, pagina, tamanho, totalPaginas }`; `status` aceita vários valores (`ABERTO,EM_ATENDIMENTO`) e `atendente=meus|todos|sem` (ou `atendenteId`) filtra por quem assumiu o chamado (`meus` é só do atendente e resolvido pelo token). Todo filtro da listagem roda no servidor (o front não filtra sobre a página). O backend não filtra status por padrão: o front envia o padrão.
 - Atendente: lista todas, altera status e vê o dashboard geral (ou só o que assumiu). **Não abre chamados**: só atende.
 - Dashboard (`GET /dashboard`): solicitante e atendente. Solicitante vê só as próprias; atendente vê tudo ou `escopo=meus`. Tudo respeita o período (`tudo`/`30d`/`7d`/datas) e o setor escolhidos.
 - Criar solicitação: status `ABERTO`, data e usuário automáticos, e grava histórico `null → ABERTO`.
 - Status muda só em sequência `ABERTO → EM_ATENDIMENTO → CONCLUIDO`, sempre com registro em `historico_solicitacoes`.
+- Dono do chamado: quem assumiu (a transição para `EM_ATENDIMENTO`, derivada do histórico) é o responsável; qualquer atendente pode assumir um chamado `ABERTO` (o primeiro vence), mas só o responsável conclui (outro atendente recebe 403). A condição vai no `WHERE` da escrita, sem coluna nova.
 
 ## Estrutura
 - `src/prisma/`: `PrismaService` (único acesso ao banco, injetado nos demais services) e `PrismaModule` (global).

@@ -134,10 +134,17 @@ describe('Autenticação e solicitações (e2e)', () => {
       .send({ titulo: 'Notebook lento', descricao: 'Trava no Excel', categoriaId: 1 })
       .expect(201);
 
-    expect(res.body).toMatchObject({
-      status: 'ABERTO',
-      usuarioId: sessao.usuario.id,
-    });
+    try {
+      expect(res.body).toMatchObject({
+        status: 'ABERTO',
+        usuarioId: sessao.usuario.id,
+      });
+    } finally {
+      // Não deixa o chamado de teste no banco (o histórico sai em cascata).
+      await app
+        .get(PrismaService)
+        .solicitacao.delete({ where: { codigo: res.body.codigo } });
+    }
   });
 
   it('rejeita campo extra e categoria inexistente com 400', async () => {
@@ -181,6 +188,7 @@ describe('Autenticação e solicitações (e2e)', () => {
 
   describe('editar e excluir (UC03/UC04)', () => {
     let auth: { Authorization: string };
+    const criados: number[] = [];
 
     const criar = async () => {
       const res = await request(app.getHttpServer())
@@ -188,12 +196,20 @@ describe('Autenticação e solicitações (e2e)', () => {
         .set(auth)
         .send({ titulo: 'Original', descricao: 'Descrição', categoriaId: 1 })
         .expect(201);
+      criados.push(res.body.codigo);
       return res.body.codigo as number;
     };
 
     beforeAll(async () => {
       const { body } = await login('solicitante.um');
       auth = { Authorization: `Bearer ${body.accessToken}` };
+    });
+
+    // Não deixa chamados de teste no banco (o histórico sai em cascata).
+    afterAll(async () => {
+      await app
+        .get(PrismaService)
+        .solicitacao.deleteMany({ where: { codigo: { in: criados } } });
     });
 
     it('edita solicitação ABERTO e mantém status e autor', async () => {
@@ -233,9 +249,13 @@ describe('Autenticação e solicitações (e2e)', () => {
 
     it('retorna 409 ao editar ou excluir solicitação fora de ABERTO', async () => {
       const codigo = await criar();
-      await app
-        .get(PrismaService)
-        .solicitacao.update({ where: { codigo }, data: { status: 'EM_ATENDIMENTO' } });
+      // O atendente assume pela API (com histórico), em vez de mexer direto no banco.
+      const { body: sessao } = await login('atendente.um');
+      await request(app.getHttpServer())
+        .patch(`/solicitacoes/${codigo}/status`)
+        .set({ Authorization: `Bearer ${sessao.accessToken}` })
+        .send({ status: 'EM_ATENDIMENTO' })
+        .expect(200);
 
       await request(app.getHttpServer())
         .patch(`/solicitacoes/${codigo}`)
@@ -419,22 +439,59 @@ describe('Autenticação e solicitações (e2e)', () => {
           where: { titulo: { contains: marcador }, ...where },
         });
 
+      // Atendente descartável que "assume" os chamados desta seção, para o histórico ficar
+      // coerente (todo EM_ATENDIMENTO/CONCLUIDO tem quem assumiu) sem mexer nos atendentes reais.
+      const ATENDENTE_PAGINACAO = 'atendente.e2e.paginacao';
+
       beforeAll(async () => {
         // Mais chamados do mesmo solicitante, com datas diferentes, para paginar.
         const prisma = app.get(PrismaService);
+        const extra = await prisma.usuario.upsert({
+          where: { usuario: ATENDENTE_PAGINACAO },
+          update: {},
+          create: {
+            nome: 'Atendente E2E Paginação',
+            usuario: ATENDENTE_PAGINACAO,
+            senha: 'sem-login', // nunca faz login: não é um hash válido
+            perfil: 'ATENDENTE',
+          },
+        });
         const agora = Date.now();
         for (let i = 0; i < QTD_EXTRA; i++) {
+          const status = statusExtras[i];
+          const criacao = new Date(agora - (i + 1) * 60_000);
+          const depois = (segundos: number) => new Date(criacao.getTime() + segundos * 1000);
           await prisma.solicitacao.create({
             data: {
               titulo: `Paginacao ${marcador} ${i + 1}`,
               descricao: 'Chamado para testar a paginação',
               categoriaId: 3,
               usuarioId: idSolicitante,
-              status: statusExtras[i],
-              dataCriacao: new Date(agora - (i + 1) * 60_000),
+              status,
+              dataCriacao: criacao,
+              historico: {
+                create: [
+                  { usuarioId: idSolicitante, statusAnterior: null, statusNovo: 'ABERTO', dataAlteracao: criacao },
+                  ...(status !== 'ABERTO'
+                    ? [{ usuarioId: extra.id, statusAnterior: 'ABERTO' as const, statusNovo: 'EM_ATENDIMENTO' as const, dataAlteracao: depois(1) }]
+                    : []),
+                  ...(status === 'CONCLUIDO'
+                    ? [{ usuarioId: extra.id, statusAnterior: 'EM_ATENDIMENTO' as const, statusNovo: 'CONCLUIDO' as const, dataAlteracao: depois(2) }]
+                    : []),
+                ],
+              },
             },
           });
         }
+      });
+
+      afterAll(async () => {
+        // Primeiro os chamados (o histórico sai junto): o histórico referencia o atendente.
+        const prisma = app.get(PrismaService);
+        await prisma.solicitacao.deleteMany({
+          where: { titulo: { startsWith: `Paginacao ${marcador}` } },
+        });
+        await prisma.usuario.deleteMany({ where: { usuario: ATENDENTE_PAGINACAO } });
       });
 
       it('pagina sem repetir nem pular chamados, com total e totalPaginas', async () => {
@@ -834,6 +891,249 @@ describe('Autenticação e solicitações (e2e)', () => {
       expect(item.atendente).toBeNull();
       expect(item.dataConclusao).toBeNull();
       expect(item.ultimaAtualizacao).toBe(item.dataCriacao);
+    });
+
+    describe('dono do chamado e filtro de atendente (meus, todos, sem)', () => {
+      let atendente2: { Authorization: string };
+      let idAtendente1: number;
+      let idAtendente2: number;
+      let semAtendente: number; // ninguém assumiu
+      let doUm: number; // atendente.um assumiu e continua em atendimento
+      let doDois: number; // atendente.dois assumiu e continua em atendimento
+      let concluidoPeloUm: number;
+
+      const criar = async (titulo: string, categoriaId = 1) => {
+        const res = await request(app.getHttpServer())
+          .post('/solicitacoes')
+          .set(solicitante)
+          .send({ titulo: `${titulo} ${marcador}`, descricao: 'x', categoriaId })
+          .expect(201);
+        return res.body.codigo as number;
+      };
+      const mudarStatus = (quem: { Authorization: string }, codigo: number, status: string) =>
+        request(app.getHttpServer())
+          .patch(`/solicitacoes/${codigo}/status`)
+          .set(quem)
+          .send({ status });
+      const noBanco = (where: object) =>
+        app.get(PrismaService).solicitacao.count({
+          where: { titulo: { contains: marcador }, ...where },
+        });
+      const assumidoPor = (usuarioId: number) => ({
+        historico: { some: { statusNovo: 'EM_ATENDIMENTO' as const, usuarioId } },
+      });
+      const naoAssumido = { historico: { none: { statusNovo: 'EM_ATENDIMENTO' as const } } };
+
+      beforeAll(async () => {
+        const { body: a1 } = await login('atendente.um');
+        const { body: a2 } = await login('atendente.dois');
+        atendente2 = { Authorization: `Bearer ${a2.accessToken}` };
+        idAtendente1 = a1.usuario.id;
+        idAtendente2 = a2.usuario.id;
+
+        semAtendente = await criar('Dono sem atendente A', 1);
+        await criar('Dono sem atendente B', 2);
+        doUm = await criar('Dono do um', 1);
+        await mudarStatus(atendente, doUm, 'EM_ATENDIMENTO').expect(200);
+        doDois = await criar('Dono do dois', 2);
+        await mudarStatus(atendente2, doDois, 'EM_ATENDIMENTO').expect(200);
+        concluidoPeloUm = await criar('Dono concluido pelo um', 1);
+        await mudarStatus(atendente, concluidoPeloUm, 'EM_ATENDIMENTO').expect(200);
+        await mudarStatus(atendente, concluidoPeloUm, 'CONCLUIDO').expect(200);
+      });
+
+      describe('bloqueio de concorrência no status', () => {
+        it('o responsável conclui; outro atendente é barrado com 403 e nada muda', async () => {
+          const codigo = await criar('Dono bloqueio');
+          await mudarStatus(atendente, codigo, 'EM_ATENDIMENTO').expect(200);
+
+          const barrado = await mudarStatus(atendente2, codigo, 'CONCLUIDO').expect(403);
+          expect(barrado.body.message).toContain('Atendente Um');
+
+          const intacto = await request(app.getHttpServer())
+            .get(`/solicitacoes/${codigo}`)
+            .set(atendente2)
+            .expect(200);
+          expect(intacto.body.status).toBe('EM_ATENDIMENTO');
+          expect(intacto.body.historico).toHaveLength(2); // sem linha do atendente barrado
+
+          const ok = await mudarStatus(atendente, codigo, 'CONCLUIDO').expect(200);
+          expect(ok.body).toMatchObject({
+            status: 'CONCLUIDO',
+            atendente: { id: idAtendente1, nome: 'Atendente Um' },
+          });
+        });
+
+        it('quem chega depois da assunção é barrado, seja qual for o status pedido', async () => {
+          const codigo = await criar('Dono chegou depois');
+          const assumiu = await mudarStatus(atendente2, codigo, 'EM_ATENDIMENTO').expect(200);
+          expect(assumiu.body.atendente).toEqual({ id: idAtendente2, nome: 'Atendente Dois' });
+
+          await mudarStatus(atendente, codigo, 'CONCLUIDO').expect(403);
+          await mudarStatus(atendente, codigo, 'EM_ATENDIMENTO').expect(409); // já está em atendimento
+          await mudarStatus(atendente, codigo, 'ABERTO').expect(409); // não volta atrás
+
+          await mudarStatus(atendente2, codigo, 'CONCLUIDO').expect(200);
+        });
+
+        it('chamado concluído não muda mais, nem pelo responsável', async () => {
+          await mudarStatus(atendente, concluidoPeloUm, 'EM_ATENDIMENTO').expect(409);
+          await mudarStatus(atendente2, concluidoPeloUm, 'CONCLUIDO').expect(409);
+        });
+
+        it('duas assunções simultâneas: uma passa (200) e a outra perde (409)', async () => {
+          const codigo = await criar('Dono corrida');
+
+          const respostas = await Promise.all([
+            mudarStatus(atendente, codigo, 'EM_ATENDIMENTO'),
+            mudarStatus(atendente2, codigo, 'EM_ATENDIMENTO'),
+          ]);
+          const statuses = respostas.map((r) => r.status).sort();
+          const vencedor = respostas.find((r) => r.status === 200)!;
+
+          expect(statuses).toEqual([200, 409]);
+          const assuncoes = await app.get(PrismaService).historicoSolicitacao.findMany({
+            where: { solicitacaoCodigo: codigo, statusNovo: 'EM_ATENDIMENTO' },
+          });
+          expect(assuncoes).toHaveLength(1); // uma só linha: não há dois responsáveis
+          expect(assuncoes[0].usuarioId).toBe(vencedor.body.atendente.id);
+
+          const detalhe = await request(app.getHttpServer())
+            .get(`/solicitacoes/${codigo}`)
+            .set(atendente)
+            .expect(200);
+          expect(detalhe.body.atendente.id).toBe(vencedor.body.atendente.id);
+        });
+
+        it('o solicitante continua sem poder mudar o status (403)', async () => {
+          await request(app.getHttpServer())
+            .patch(`/solicitacoes/${semAtendente}/status`)
+            .set(solicitante)
+            .send({ status: 'EM_ATENDIMENTO' })
+            .expect(403);
+        });
+      });
+
+      describe('atendente no detalhe', () => {
+        it('é null enquanto ninguém assumiu e traz o responsável depois', async () => {
+          const aberto = await request(app.getHttpServer())
+            .get(`/solicitacoes/${semAtendente}`)
+            .set(atendente)
+            .expect(200);
+          expect(aberto.body.atendente).toBeNull();
+
+          const assumido = await request(app.getHttpServer())
+            .get(`/solicitacoes/${doDois}`)
+            .set(solicitante)
+            .expect(200);
+          expect(assumido.body.atendente).toEqual({ id: idAtendente2, nome: 'Atendente Dois' });
+        });
+      });
+
+      describe('filtro de atendente na listagem', () => {
+        const total = async (auth: { Authorization: string }, query: string) => {
+          const res = await listar(auth, `?q=${marcador}&${query}`).expect(200);
+          return res.body as { itens: { codigo: number; atendente: { id: number } | null; status: string }[]; total: number };
+        };
+
+        it('"meus": só o que o atendente logado assumiu (resolvido pelo token)', async () => {
+          const um = await total(atendente, 'atendente=meus');
+          const dois = await total(atendente2, 'atendente=meus');
+
+          expect(um.total).toBe(await noBanco(assumidoPor(idAtendente1)));
+          expect(dois.total).toBe(await noBanco(assumidoPor(idAtendente2)));
+          for (const item of um.itens) expect(item.atendente?.id).toBe(idAtendente1);
+          for (const item of dois.itens) expect(item.atendente?.id).toBe(idAtendente2);
+          expect(um.itens.map((i) => i.codigo)).toContain(doUm);
+          expect(um.itens.map((i) => i.codigo)).toContain(concluidoPeloUm);
+          expect(um.itens.map((i) => i.codigo)).not.toContain(doDois);
+          expect(dois.itens.map((i) => i.codigo)).toContain(doDois);
+        });
+
+        it('"sem": só os chamados que ninguém assumiu', async () => {
+          const res = await total(atendente, 'atendente=sem');
+
+          expect(res.total).toBe(await noBanco(naoAssumido));
+          expect(res.itens.map((i) => i.codigo)).toContain(semAtendente);
+          for (const item of res.itens) {
+            expect(item.atendente).toBeNull();
+            expect(item.status).toBe('ABERTO');
+          }
+        });
+
+        it('"todos" equivale a não filtrar e inclui os chamados dos colegas', async () => {
+          const todos = await total(atendente, 'atendente=todos');
+          const omitido = await total(atendente, 'tamanho=20');
+
+          expect(todos.total).toBe(await noBanco({}));
+          expect(omitido.total).toBe(todos.total);
+          expect(todos.itens.map((i) => i.codigo)).toEqual(expect.arrayContaining([doUm, doDois]));
+        });
+
+        it('as 3 opções particionam o resultado: meus + dos colegas + sem = todos', async () => {
+          const meus = await total(atendente, 'atendente=meus');
+          const doColega = await total(atendente2, 'atendente=meus');
+          const sem = await total(atendente, 'atendente=sem');
+          const todos = await total(atendente, 'atendente=todos');
+          const outros = await noBanco({
+            historico: { some: { statusNovo: 'EM_ATENDIMENTO', usuarioId: { notIn: [idAtendente1, idAtendente2] } } },
+          });
+
+          expect(meus.total + doColega.total + outros + sem.total).toBe(todos.total);
+        });
+
+        it('combina com status, setor e paginação', async () => {
+          const andamento = await total(atendente, 'atendente=meus&status=EM_ATENDIMENTO');
+          expect(andamento.total).toBe(
+            await noBanco({ ...assumidoPor(idAtendente1), status: 'EM_ATENDIMENTO' }),
+          );
+
+          const semNoSetor = await total(atendente, 'atendente=sem&categoriaId=2');
+          expect(semNoSetor.total).toBe(await noBanco({ ...naoAssumido, categoriaId: 2 }));
+
+          // "sem" com um status que sempre tem atendente não devolve nada.
+          const impossivel = await total(atendente, 'atendente=sem&status=EM_ATENDIMENTO,CONCLUIDO');
+          expect(impossivel).toMatchObject({ itens: [], total: 0 });
+
+          const meus = await total(atendente, 'atendente=meus');
+          const vistos: number[] = [];
+          for (let pagina = 1; pagina <= meus.total; pagina++) {
+            const res = await total(atendente, `atendente=meus&tamanho=1&pagina=${pagina}`);
+            expect(res.total).toBe(meus.total); // o total acompanha o filtro em toda página
+            vistos.push(res.itens[0].codigo);
+          }
+          expect(new Set(vistos).size).toBe(meus.total);
+        });
+
+        it('o solicitante pode usar "sem" e "todos" nos próprios chamados, mas não "meus"', async () => {
+          const sem = await total(solicitante, 'atendente=sem');
+          expect(sem.total).toBe(await noBanco({ ...naoAssumido, usuarioId: idSolicitante }));
+
+          const todos = await total(solicitante, 'atendente=todos');
+          expect(todos.total).toBe(await noBanco({ usuarioId: idSolicitante }));
+
+          await listar(solicitante, '?atendente=meus').expect(400);
+        });
+
+        it('rejeita valor inválido e "atendente" junto de "atendenteId" com 400', async () => {
+          for (const query of [
+            '?atendente=MEUS',
+            '?atendente=todos,sem',
+            '?atendente=',
+            `?atendente=meus&atendenteId=${idAtendente2}`,
+            `?atendente=sem&atendenteId=${idAtendente2}`,
+          ]) {
+            await listar(atendente, query).expect(400);
+          }
+        });
+
+        it('"atendenteId" continua funcionando para um atendente específico', async () => {
+          const res = await total(atendente, `atendenteId=${idAtendente2}`);
+
+          expect(res.total).toBe(await noBanco(assumidoPor(idAtendente2)));
+          expect(res.itens.map((i) => i.codigo)).toContain(doDois);
+        });
+      });
     });
 
     it('solicitante não altera status (403) e status inválido dá 400', async () => {

@@ -65,6 +65,25 @@ describe('FiltrarSolicitacoesDto', () => {
     );
   });
 
+  describe('atendente (meus | todos | sem)', () => {
+    it.each([['meus'], ['todos'], ['sem']])('aceita %j', async (atendente) => {
+      expect((await converter({ atendente })).atendente).toBe(atendente);
+    });
+
+    it('é opcional', async () => {
+      expect((await converter({})).atendente).toBeUndefined();
+    });
+
+    it.each([['MEUS'], ['outro'], [''], ['meus,sem'], ['1'], [['meus', 'sem']]])(
+      'rejeita %j com 400',
+      async (atendente) => {
+        await expect(converter({ atendente })).rejects.toBeInstanceOf(
+          BadRequestException,
+        );
+      },
+    );
+  });
+
   describe('atendenteId', () => {
     it('converte o texto da query em número', async () => {
       expect((await converter({ atendenteId: '9' })).atendenteId).toBe(9);
