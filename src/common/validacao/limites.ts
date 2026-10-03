@@ -11,4 +11,5 @@ export const LIMITES = {
   usuario: 255,
   senha: 128,
   busca: 100,
+  comentario: 2000,
 } as const;

@@ -13,6 +13,7 @@ import {
 import type { UsuarioAutenticado } from '../common/types/usuario-autenticado.js';
 import { escaparCuringasLike } from '../common/validacao/like.js';
 import { PrismaService } from '../prisma/prisma.service.js';
+import { ASSUNCAO, gravarTransicao } from './assuncao.js';
 import type { AlterarStatusDto } from './dto/alterar-status.dto.js';
 import type { CriarSolicitacaoDto } from './dto/criar-solicitacao.dto.js';
 import type { EditarSolicitacaoDto } from './dto/editar-solicitacao.dto.js';
@@ -29,14 +30,6 @@ const PROXIMO_STATUS: Partial<Record<StatusSolicitacao, StatusSolicitacao>> = {
   [StatusSolicitacao.ABERTO]: StatusSolicitacao.EM_ATENDIMENTO,
   [StatusSolicitacao.EM_ATENDIMENTO]: StatusSolicitacao.CONCLUIDO,
 };
-
-// Primeira assunção do chamado (→ EM_ATENDIMENTO): quem a fez é o atendente responsável.
-const ASSUNCAO = {
-  where: { statusNovo: StatusSolicitacao.EM_ATENDIMENTO },
-  orderBy: [{ dataAlteracao: 'asc' }, { id: 'asc' }],
-  take: 1,
-  select: { usuario: { select: { id: true, nome: true } } },
-} satisfies Prisma.Solicitacao$historicoArgs;
 
 const UM_DIA_MS = 24 * 60 * 60 * 1000;
 
@@ -150,6 +143,9 @@ export class SolicitacoesService {
       include: {
         categoria: true,
         usuario: { select: { id: true, nome: true, usuario: true } },
+        _count: {
+          select: { comentarios: { where: { excluidoEm: null } } },
+        },
         historico: {
           orderBy: [{ dataAlteracao: 'asc' }, { id: 'asc' }],
           select: {
@@ -171,9 +167,10 @@ export class SolicitacoesService {
       );
     }
 
-    const { usuario: solicitante, ...resto } = solicitacao;
+    const { usuario: solicitante, _count, ...resto } = solicitacao;
     return {
       ...resto,
+      totalComentarios: _count.comentarios,
       solicitante,
       // Atendente responsável (quem assumiu); null se ninguém assumiu ainda.
       atendente:
@@ -260,39 +257,7 @@ export class SolicitacoesService {
     }
 
     return this.prisma.$transaction(async (tx) => {
-      // A condição vai na própria escrita: se outro atendente assumiu ou mudou o status
-      // entre a checagem e o update, nada é gravado.
-      const { count } = await tx.solicitacao.updateMany({
-        where: {
-          codigo,
-          status: atual,
-          ...(exigeDono && {
-            historico: {
-              some: {
-                statusNovo: StatusSolicitacao.EM_ATENDIMENTO,
-                usuarioId: atendente.id,
-              },
-            },
-          }),
-        },
-        data: { status: novo },
-      });
-      if (count === 0) {
-        throw new ConflictException(
-          atual === StatusSolicitacao.ABERTO
-            ? 'Este chamado já foi assumido por outro atendente; atualize a tela'
-            : 'O status da solicitação foi alterado; atualize a tela',
-        );
-      }
-
-      await tx.historicoSolicitacao.create({
-        data: {
-          solicitacaoCodigo: codigo,
-          usuarioId: atendente.id,
-          statusAnterior: atual,
-          statusNovo: novo,
-        },
-      });
+      await gravarTransicao(tx, codigo, atual, novo, atendente, exigeDono);
 
       const { historico, ...atualizada } =
         await tx.solicitacao.findUniqueOrThrow({

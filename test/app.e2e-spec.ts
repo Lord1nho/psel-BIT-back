@@ -542,7 +542,8 @@ describe('Autenticação e solicitações (e2e)', () => {
           .expect(200);
 
         expect(res.body).toMatchObject({ pagina: 1, tamanho: 20 });
-        expect(res.body.itens).toHaveLength(20);
+        // Não depende do volume do banco: com menos de 20 chamados a página vem menor.
+        expect(res.body.itens).toHaveLength(Math.min(20, res.body.total));
       });
 
       it('sem resultados: itens vazio, total 0 e totalPaginas 0', async () => {
@@ -1636,6 +1637,420 @@ describe('Autenticação e solicitações (e2e)', () => {
           .get(`/solicitacoes/${INT_MAX}`)
           .set(atendente)
           .expect(404);
+      });
+    });
+  });
+
+  describe('comentários no chamado (UC08)', () => {
+    const marca = `COM${Date.now()}`;
+    const INT_MAX = 2_147_483_647;
+    type Auth = { Authorization: string };
+    let sol1: Auth;
+    let sol2: Auth;
+    let at1: Auth;
+    let at2: Auth;
+    let idAt1: number;
+
+    const http = () => request(app.getHttpServer());
+    const criarChamado = async (titulo: string) =>
+      (
+        await http()
+          .post('/solicitacoes')
+          .set(sol1)
+          .send({ titulo: `${titulo} ${marca}`, descricao: 'x', categoriaId: 1 })
+          .expect(201)
+      ).body.codigo as number;
+    const rota = (codigo: number, id?: number) =>
+      `/solicitacoes/${codigo}/comentarios${id ? `/${id}` : ''}`;
+    const comentar = (quem: Auth, codigo: number, texto: string) =>
+      http().post(rota(codigo)).set(quem).send({ texto });
+    const status = (quem: Auth, codigo: number, novo: string) =>
+      http().patch(`/solicitacoes/${codigo}/status`).set(quem).send({ status: novo });
+    const detalhe = async (codigo: number) =>
+      (await http().get(`/solicitacoes/${codigo}`).set(at1).expect(200)).body;
+    // Só os visíveis (não excluídos); a trilha de auditoria é conferida direto no banco.
+    const contar = (codigo: number) =>
+      app
+        .get(PrismaService)
+        .comentario.count({ where: { solicitacaoCodigo: codigo, excluidoEm: null } });
+
+    beforeAll(async () => {
+      const tokens = await Promise.all(
+        ['solicitante.um', 'solicitante.dois', 'atendente.um', 'atendente.dois'].map((u) => login(u)),
+      );
+      [sol1, sol2, at1, at2] = tokens.map((t) => ({
+        Authorization: `Bearer ${t.body.accessToken}`,
+      }));
+      idAt1 = tokens[2].body.usuario.id;
+    });
+
+    afterAll(async () => {
+      // Os comentários e o histórico saem em cascata.
+      await app
+        .get(PrismaService)
+        .solicitacao.deleteMany({ where: { titulo: { contains: marca } } });
+    });
+
+    it('exige autenticação', async () => {
+      await http().get(rota(1)).expect(401);
+      await http().post(rota(1)).send({ texto: 'x' }).expect(401);
+    });
+
+    describe('solicitante dono', () => {
+      it('comenta no próprio chamado (texto aparado) sem mudar o status', async () => {
+        const codigo = await criarChamado('Dono comenta');
+
+        const res = await comentar(sol1, codigo, '  Mais detalhes  ').expect(201);
+
+        expect(res.body).toMatchObject({
+          texto: 'Mais detalhes',
+          dataEdicao: null,
+          autor: { nome: 'Solicitante Um', perfil: 'SOLICITANTE' },
+        });
+        expect(res.body).not.toHaveProperty('usuario');
+        expect((await detalhe(codigo)).status).toBe('ABERTO');
+      });
+
+      it('outro solicitante não lê, comenta, edita nem exclui (403)', async () => {
+        const codigo = await criarChamado('Alheio');
+        const { body } = await comentar(sol1, codigo, 'Meu').expect(201);
+
+        await http().get(rota(codigo)).set(sol2).expect(403);
+        await comentar(sol2, codigo, 'Intruso').expect(403);
+        await http().patch(rota(codigo, body.id)).set(sol2).send({ texto: 'x' }).expect(403);
+        await http().delete(rota(codigo, body.id)).set(sol2).expect(403);
+        expect(await contar(codigo)).toBe(1);
+      });
+
+      it('chamado inexistente é 404', async () => {
+        await http().get(rota(INT_MAX)).set(sol1).expect(404);
+        await comentar(sol1, INT_MAX, 'x').expect(404);
+      });
+    });
+
+    describe('atendente assume ao comentar', () => {
+      it('em chamado ABERTO assume (EM_ATENDIMENTO + histórico) e comenta', async () => {
+        const codigo = await criarChamado('Assume comentando');
+
+        const res = await comentar(at1, codigo, 'Vou ajudar').expect(201);
+
+        expect(res.body.autor).toMatchObject({ id: idAt1, perfil: 'ATENDENTE' });
+        const d = await detalhe(codigo);
+        expect(d).toMatchObject({
+          status: 'EM_ATENDIMENTO',
+          atendente: { id: idAt1 },
+          totalComentarios: 1,
+        });
+        const assuncoes = await app.get(PrismaService).historicoSolicitacao.count({
+          where: { solicitacaoCodigo: codigo, statusNovo: 'EM_ATENDIMENTO' },
+        });
+        expect(assuncoes).toBe(1);
+      });
+
+      it('outro atendente não comenta com responsável definido (403, com o nome); só lê', async () => {
+        const codigo = await criarChamado('Outro atendente');
+        await comentar(at1, codigo, 'Meu').expect(201);
+
+        const barrado = await comentar(at2, codigo, 'Posso?').expect(403);
+        expect(barrado.body.message).toContain('Atendente Um');
+        const lista = await http().get(rota(codigo)).set(at2).expect(200);
+        expect(lista.body.itens).toHaveLength(1);
+        expect(await contar(codigo)).toBe(1);
+      });
+
+      it('o solicitante responde e o responsável segue na conversa', async () => {
+        const codigo = await criarChamado('Conversa');
+        await comentar(at1, codigo, 'Qual o patrimônio?').expect(201);
+        await comentar(sol1, codigo, 'É o 1234').expect(201);
+        await comentar(at1, codigo, 'Obrigado').expect(201);
+
+        const { body } = await http().get(rota(codigo)).set(sol1).expect(200);
+        expect(body.itens.map((c: { texto: string }) => c.texto)).toEqual([
+          'Qual o patrimônio?',
+          'É o 1234',
+          'Obrigado',
+        ]);
+        expect(body.total).toBe(3);
+      });
+
+      it('dois atendentes comentando ao mesmo tempo: um 201 e um 409, um só responsável', async () => {
+        const codigo = await criarChamado('Corrida comentando');
+
+        const respostas = await Promise.all([
+          comentar(at1, codigo, 'Eu primeiro'),
+          comentar(at2, codigo, 'Não, eu'),
+        ]);
+
+        expect(respostas.map((r) => r.status).sort()).toEqual([201, 409]);
+        const assuncoes = await app.get(PrismaService).historicoSolicitacao.findMany({
+          where: { solicitacaoCodigo: codigo, statusNovo: 'EM_ATENDIMENTO' },
+        });
+        expect(assuncoes).toHaveLength(1);
+        expect(await contar(codigo)).toBe(1);
+        const vencedor = respostas.find((r) => r.status === 201)!;
+        expect(assuncoes[0].usuarioId).toBe(vencedor.body.autor.id);
+      });
+
+      it('duplo envio do mesmo atendente: os dois passam e há uma só assunção', async () => {
+        const codigo = await criarChamado('Duplo envio');
+
+        const respostas = await Promise.all([
+          comentar(at1, codigo, 'Mensagem 1'),
+          comentar(at1, codigo, 'Mensagem 2'),
+        ]);
+
+        expect(respostas.map((r) => r.status)).toEqual([201, 201]);
+        expect(await contar(codigo)).toBe(2);
+        const assuncoes = await app.get(PrismaService).historicoSolicitacao.count({
+          where: { solicitacaoCodigo: codigo, statusNovo: 'EM_ATENDIMENTO' },
+        });
+        expect(assuncoes).toBe(1);
+      });
+
+      it('apagar o comentário que assumiu não desfaz a assunção', async () => {
+        const codigo = await criarChamado('Apaga e mantém');
+        const { body } = await comentar(at1, codigo, 'Assumi').expect(201);
+
+        await http().delete(rota(codigo, body.id)).set(at1).expect(204);
+
+        expect((await detalhe(codigo)).status).toBe('EM_ATENDIMENTO');
+      });
+    });
+
+    describe('chamado concluído é somente leitura', () => {
+      it('GET segue liberado; POST, PATCH e DELETE dão 409', async () => {
+        const codigo = await criarChamado('Concluído');
+        const { body } = await comentar(at1, codigo, 'Antes de concluir').expect(201);
+        const antes = await comentar(sol1, codigo, 'Resposta').expect(201);
+        await status(at1, codigo, 'CONCLUIDO').expect(200);
+
+        await http().get(rota(codigo)).set(sol1).expect(200);
+        await comentar(sol1, codigo, 'Tarde').expect(409);
+        await comentar(at1, codigo, 'Tarde').expect(409);
+        await http().patch(rota(codigo, body.id)).set(at1).send({ texto: 'x' }).expect(409);
+        await http().delete(rota(codigo, antes.body.id)).set(sol1).expect(409);
+        expect(await contar(codigo)).toBe(2);
+      });
+    });
+
+    describe('editar e excluir', () => {
+      it('o autor edita (dataEdicao preenchida) e exclui; o outro lado recebe 403', async () => {
+        const codigo = await criarChamado('Autor');
+        const doAtendente = (await comentar(at1, codigo, 'Do atendente').expect(201)).body;
+        const doSolicitante = (await comentar(sol1, codigo, 'Do solicitante').expect(201)).body;
+
+        await http().patch(rota(codigo, doAtendente.id)).set(sol1).send({ texto: 'x' }).expect(403);
+        await http().delete(rota(codigo, doSolicitante.id)).set(at1).expect(403);
+
+        const editado = await http()
+          .patch(rota(codigo, doSolicitante.id))
+          .set(sol1)
+          .send({ texto: '  Corrigido ' })
+          .expect(200);
+        expect(editado.body.texto).toBe('Corrigido');
+        expect(editado.body.dataEdicao).not.toBeNull();
+
+        await http().delete(rota(codigo, doSolicitante.id)).set(sol1).expect(204);
+        expect(await contar(codigo)).toBe(1);
+      });
+
+      it('comentário de outro chamado ou inexistente é 404', async () => {
+        const a = await criarChamado('Chamado A');
+        const b = await criarChamado('Chamado B');
+        const { body } = await comentar(sol1, a, 'No A').expect(201);
+
+        await http().patch(rota(b, body.id)).set(sol1).send({ texto: 'x' }).expect(404);
+        await http().delete(rota(b, body.id)).set(sol1).expect(404);
+        await http().delete(rota(a, INT_MAX)).set(sol1).expect(404);
+      });
+    });
+
+    describe('listagem com proxComentario', () => {
+      it('devolve em partes pelo cursor e, sem novidade, repete o cursor', async () => {
+        const codigo = await criarChamado('Cursor');
+        const ids: number[] = [];
+        for (const t of ['um', 'dois', 'três']) {
+          ids.push((await comentar(sol1, codigo, t).expect(201)).body.id);
+        }
+
+        const p1 = (await http().get(`${rota(codigo)}?limite=2`).set(sol1).expect(200)).body;
+        expect(p1.itens.map((c: { id: number }) => c.id)).toEqual([ids[0], ids[1]]);
+        expect(p1).toMatchObject({ total: 3, proxComentario: ids[1] });
+
+        const p2 = (
+          await http().get(`${rota(codigo)}?proxComentario=${p1.proxComentario}&limite=2`).set(sol1).expect(200)
+        ).body;
+        expect(p2.itens.map((c: { id: number }) => c.id)).toEqual([ids[2]]);
+        expect(p2.proxComentario).toBe(ids[2]);
+
+        const p3 = (
+          await http().get(`${rota(codigo)}?proxComentario=${p2.proxComentario}`).set(sol1).expect(200)
+        ).body;
+        expect(p3).toMatchObject({ itens: [], total: 3, proxComentario: ids[2] });
+      });
+
+      it('sem comentários o cursor é null', async () => {
+        const codigo = await criarChamado('Vazio');
+
+        const { body } = await http().get(rota(codigo)).set(sol1).expect(200);
+
+        expect(body).toEqual({ itens: [], total: 0, proxComentario: null });
+      });
+
+      it('revalida com ETag: 304 sem corpo quando nada mudou, 200 quando muda', async () => {
+        const codigo = await criarChamado('Etag');
+        await comentar(sol1, codigo, 'um').expect(201);
+
+        const res = await http().get(rota(codigo)).set(sol1).expect(200);
+        expect(res.headers['cache-control']).toBe('private, no-cache');
+        const etag = res.headers.etag;
+        expect(etag).toBeTruthy();
+
+        const igual = await http().get(rota(codigo)).set(sol1).set('If-None-Match', etag).expect(304);
+        expect(igual.text).toBeFalsy();
+
+        await comentar(sol1, codigo, 'dois').expect(201);
+        await http().get(rota(codigo)).set(sol1).set('If-None-Match', etag).expect(200);
+      });
+
+      it.each(['0', '-1', 'abc', '2147483648'])('proxComentario %s é 400', async (valor) => {
+        const codigo = await criarChamado('Cursor inválido');
+        await http().get(`${rota(codigo)}?proxComentario=${valor}`).set(sol1).expect(400);
+      });
+
+      it.each(['0', '101', 'abc'])('limite %s é 400', async (valor) => {
+        const codigo = await criarChamado('Limite inválido');
+        await http().get(`${rota(codigo)}?limite=${valor}`).set(sol1).expect(400);
+      });
+    });
+
+    describe('exclusão do chamado', () => {
+      it('apaga os comentários junto (cascata)', async () => {
+        const codigo = await criarChamado('Cascata');
+        await comentar(sol1, codigo, 'Vai embora').expect(201);
+
+        await http().delete(`/solicitacoes/${codigo}`).set(sol1).expect(204);
+
+        expect(await contar(codigo)).toBe(0);
+      });
+    });
+
+    describe('trilha de auditoria (interna, não aparece na API)', () => {
+      const prisma = () => app.get(PrismaService);
+
+      it('excluir é lógico: some da API, mas texto, autor e quem excluiu ficam no banco', async () => {
+        const codigo = await criarChamado('Auditoria exclusão');
+        const { body: criado } = await comentar(sol1, codigo, 'Texto que será apagado').expect(201);
+        await comentar(sol1, codigo, 'Fica').expect(201);
+
+        await http().delete(rota(codigo, criado.id)).set(sol1).expect(204);
+
+        const lista = await http().get(rota(codigo)).set(at1).expect(200);
+        expect(lista.body.itens.map((c: { texto: string }) => c.texto)).toEqual(['Fica']);
+        expect(lista.body.total).toBe(1);
+        expect((await detalhe(codigo)).totalComentarios).toBe(1);
+
+        const linha = await prisma().comentario.findUniqueOrThrow({ where: { id: criado.id } });
+        expect(linha.texto).toBe('Texto que será apagado');
+        expect(linha.excluidoEm).not.toBeNull();
+        expect(linha.excluidoPorId).toBe(criado.autor.id);
+        expect(linha.usuarioId).toBe(criado.autor.id);
+      });
+
+      it('comentário excluído não pode ser editado, excluído de novo nem reaparece (404)', async () => {
+        const codigo = await criarChamado('Auditoria excluído');
+        const { body } = await comentar(sol1, codigo, 'Apagado').expect(201);
+        await http().delete(rota(codigo, body.id)).set(sol1).expect(204);
+
+        await http().patch(rota(codigo, body.id)).set(sol1).send({ texto: 'x' }).expect(404);
+        await http().delete(rota(codigo, body.id)).set(sol1).expect(404);
+
+        const sobras = await prisma().comentario.findUniqueOrThrow({ where: { id: body.id } });
+        expect(sobras.texto).toBe('Apagado'); // a tentativa de editar não alterou nada
+      });
+
+      it('cada edição guarda o texto anterior e quem editou, em ordem', async () => {
+        const codigo = await criarChamado('Auditoria edição');
+        const { body } = await comentar(sol1, codigo, 'Versão 1').expect(201);
+
+        await http().patch(rota(codigo, body.id)).set(sol1).send({ texto: 'Versão 2' }).expect(200);
+        await http().patch(rota(codigo, body.id)).set(sol1).send({ texto: 'Versão 3' }).expect(200);
+
+        const revisoes = await prisma().comentarioRevisao.findMany({
+          where: { comentarioId: body.id },
+          orderBy: { id: 'asc' },
+        });
+        expect(revisoes.map((r) => r.textoAnterior)).toEqual(['Versão 1', 'Versão 2']);
+        expect(revisoes.every((r) => r.editadoPorId === body.autor.id)).toBe(true);
+        const atual = await prisma().comentario.findUniqueOrThrow({ where: { id: body.id } });
+        expect(atual.texto).toBe('Versão 3');
+      });
+
+      it('edição recusada (403, 409, validação) não grava revisão', async () => {
+        const codigo = await criarChamado('Auditoria recusada');
+        const { body } = await comentar(at1, codigo, 'Do atendente').expect(201);
+
+        await http().patch(rota(codigo, body.id)).set(sol1).send({ texto: 'x' }).expect(403);
+        await http().patch(rota(codigo, body.id)).set(at1).send({ texto: '   ' }).expect(400);
+        await status(at1, codigo, 'CONCLUIDO').expect(200);
+        await http().patch(rota(codigo, body.id)).set(at1).send({ texto: 'tarde' }).expect(409);
+
+        expect(await prisma().comentarioRevisao.count({ where: { comentarioId: body.id } })).toBe(0);
+      });
+
+      it('a API nunca expõe os campos de auditoria', async () => {
+        const codigo = await criarChamado('Auditoria sigilo');
+        const { body } = await comentar(sol1, codigo, 'v1').expect(201);
+        const editado = await http().patch(rota(codigo, body.id)).set(sol1).send({ texto: 'v2' }).expect(200);
+
+        const lista = await http().get(rota(codigo)).set(sol1).expect(200);
+
+        for (const item of [body, editado.body, lista.body.itens[0]]) {
+          expect(item).not.toHaveProperty('excluidoEm');
+          expect(item).not.toHaveProperty('excluidoPorId');
+          expect(item).not.toHaveProperty('revisoes');
+        }
+      });
+
+      it('excluir o chamado (UC04) leva junto comentários e revisões', async () => {
+        const codigo = await criarChamado('Auditoria cascata');
+        const { body } = await comentar(sol1, codigo, 'a').expect(201);
+        await http().patch(rota(codigo, body.id)).set(sol1).send({ texto: 'b' }).expect(200);
+
+        await http().delete(`/solicitacoes/${codigo}`).set(sol1).expect(204);
+
+        expect(await prisma().comentarioRevisao.count({ where: { comentarioId: body.id } })).toBe(0);
+        expect(await prisma().comentario.count({ where: { id: body.id } })).toBe(0);
+      });
+    });
+
+    describe('validação do texto e dos ids', () => {
+      let codigo: number;
+      beforeAll(async () => {
+        codigo = await criarChamado('Validação');
+      });
+
+      it.each([[''], ['   '], ['\n\t']])('texto vazio ou só espaços (%j) é 400', async (texto) => {
+        await comentar(sol1, codigo, texto).expect(400);
+      });
+
+      it('2.000 caracteres passam e 2.001 dão 400', async () => {
+        await comentar(sol1, codigo, 'a'.repeat(2000)).expect(201);
+        await comentar(sol1, codigo, 'a'.repeat(2001)).expect(400);
+      });
+
+      it('caractere nulo, tipo errado e campo extra dão 400', async () => {
+        await comentar(sol1, codigo, 'a\u0000b').expect(400);
+        await http().post(rota(codigo)).set(sol1).send({ texto: 123 }).expect(400);
+        await http().post(rota(codigo)).set(sol1).send({}).expect(400);
+        await http().post(rota(codigo)).set(sol1).send({ texto: 'ok', autorId: 1 }).expect(400);
+      });
+
+      it.each(['0', '-1', 'abc', '2147483648'])('ids de rota %s dão 400', async (valor) => {
+        await http().get(`/solicitacoes/${valor}/comentarios`).set(sol1).expect(400);
+        await http().post(`/solicitacoes/${valor}/comentarios`).set(sol1).send({ texto: 'x' }).expect(400);
+        await http().patch(`${rota(codigo)}/${valor}`).set(sol1).send({ texto: 'x' }).expect(400);
+        await http().delete(`${rota(codigo)}/${valor}`).set(sol1).expect(400);
       });
     });
   });

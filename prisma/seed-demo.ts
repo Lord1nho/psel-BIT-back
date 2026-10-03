@@ -112,6 +112,29 @@ function escolherPonderado<T extends { peso: number }>(itens: T[]): T {
 
 const HORA = 3_600_000;
 
+// Conversas dos chamados: gerador próprio, para não alterar os chamados já gerados com a semente acima.
+const sorteioConversa = criarAleatorio(20261006);
+const PERGUNTAS_DO_ATENDENTE = [
+  'Olá! Pode me passar mais detalhes, por favor? Desde quando acontece?',
+  'Recebi o chamado. Você consegue enviar o número do patrimônio ou o modelo do equipamento?',
+  'Estou analisando. Isso ocorre sempre ou só em alguns horários?',
+];
+const RESPOSTAS_DO_SOLICITANTE = [
+  'Começou ontem à tarde e acontece sempre que tento abrir.',
+  'Claro, é o equipamento da minha mesa. Posso deixar disponível a qualquer hora.',
+  'Só pela manhã, depois normaliza sozinho.',
+];
+const FECHAMENTOS_DO_ATENDENTE = [
+  'Ajuste feito. Pode testar e me avisar se algo continuar estranho.',
+  'Resolvido do nosso lado. Vou concluir o chamado.',
+];
+const COMPLEMENTOS_DO_SOLICITANTE = [
+  'Só complementando: o problema também aparece no outro computador da sala.',
+  'Se precisarem, estou disponível o dia todo.',
+];
+const sortearFrase = (frases: string[]) =>
+  frases[Math.floor(sorteioConversa() * frases.length)];
+
 // Chamados recentes tendem a estar abertos; os antigos, concluídos.
 function sortearStatus(diasAtras: number): StatusSolicitacao {
   const [pConcluido, pAtendimento] =
@@ -204,9 +227,15 @@ async function main() {
       { usuarioId: solicitante, statusAnterior: null, statusNovo: 'ABERTO', dataAlteracao: criacao },
     ];
 
+    let responsavel: number | null = null;
+    let assumidoEm = criacao.getTime();
+    let fimEm = limite;
+
     if (status !== 'ABERTO') {
       const atendente = escolher(atendentes);
       const assumido = new Date(Math.min(criacao.getTime() + entre(0.5, 40) * HORA, limite));
+      responsavel = atendente;
+      assumidoEm = assumido.getTime();
       historico.push({
         usuarioId: atendente,
         statusAnterior: 'ABERTO',
@@ -217,6 +246,7 @@ async function main() {
         // Em geral quem assumiu conclui; às vezes outro atendente.
         const quemConclui = aleatorio() < 0.8 ? atendente : escolher(atendentes);
         const concluido = new Date(Math.min(assumido.getTime() + entre(1, 120) * HORA, limite));
+        fimEm = concluido.getTime();
         historico.push({
           usuarioId: quemConclui,
           statusAnterior: 'EM_ATENDIMENTO',
@@ -224,6 +254,23 @@ async function main() {
           dataAlteracao: concluido,
         });
       }
+    }
+
+    // Só atendente responsável e solicitante dono escrevem; nada depois da conclusão.
+    const comentarios: { usuarioId: number; texto: string; dataCriacao: Date }[] = [];
+    const comentar = (usuarioId: number, frase: string, ms: number) =>
+      comentarios.push({ usuarioId, texto: frase, dataCriacao: new Date(ms) });
+    if (responsavel !== null && sorteioConversa() < 0.55) {
+      const janela = Math.max(fimEm - assumidoEm, 60_000);
+      const t1 = Math.min(assumidoEm + janela * 0.1, fimEm);
+      const t2 = Math.min(assumidoEm + janela * 0.4, fimEm);
+      comentar(responsavel, sortearFrase(PERGUNTAS_DO_ATENDENTE), t1);
+      comentar(solicitante, sortearFrase(RESPOSTAS_DO_SOLICITANTE), t2);
+      if (status === 'CONCLUIDO') {
+        comentar(responsavel, sortearFrase(FECHAMENTOS_DO_ATENDENTE), Math.min(assumidoEm + janela * 0.8, fimEm));
+      }
+    } else if (status === 'ABERTO' && sorteioConversa() < 0.15) {
+      comentar(solicitante, sortearFrase(COMPLEMENTOS_DO_SOLICITANTE), Math.min(criacao.getTime() + entre(0.2, 3) * HORA, limite));
     }
 
     await prisma.solicitacao.create({
@@ -235,6 +282,7 @@ async function main() {
         status,
         dataCriacao: criacao,
         historico: { create: historico },
+        comentarios: { create: comentarios },
       },
     });
     resumo[status]++;
