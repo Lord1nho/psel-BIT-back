@@ -23,7 +23,7 @@ Copie `.env.example` para `.env` antes de tudo.
 ## Banco de dados
 `prisma/schema.prisma` é a **fonte da verdade**; o SQL sai das migrations. Nunca versionar `DROP` no SQL; para resetar use `prisma migrate reset`.
 
-- Tabelas: `usuarios`, `categorias`, `solicitacoes` (PK `codigo`), `historico_solicitacoes`.
+- Tabelas: `usuarios`, `categorias`, `solicitacoes` (PK `codigo`), `historico_solicitacoes`, `comentarios` e `comentarios_revisoes` (`ON DELETE CASCADE`).
 - Enums em ASCII maiúsculo, sem `@map` de valor: `StatusSolicitacao` = `ABERTO | EM_ATENDIMENTO | CONCLUIDO`; `PerfilUsuario` = `SOLICITANTE | ATENDENTE`. "Em Atendimento" é só rótulo de exibição.
 - Código em camelCase, banco em snake_case (`@map` / `@@map`). Datas em `Timestamptz(6)`.
 - `historico_solicitacoes` tem `ON DELETE CASCADE` na solicitação (necessário para o UC04).
@@ -37,6 +37,7 @@ Copie `.env.example` para `.env` antes de tudo.
 - Atendente: lista todas, altera status e vê o dashboard geral (ou só o que assumiu). **Não abre chamados**: só atende.
 - Dashboard (`GET /dashboard`): solicitante e atendente. Solicitante vê só as próprias; atendente vê tudo ou `escopo=meus`. Tudo respeita o período (`tudo`/`30d`/`7d`/datas) e o setor escolhidos.
 - Validação de entrada (`src/common/validacao/` e `src/common/pipes/`): textos usam `@TextoObrigatorio`/`@TextoOpcional` (aparam espaços, rejeitam vazio, tamanho acima do limite e o caractere nulo); ids usam `@IdInteiro` (1 a 2.147.483.647, o teto do `integer` do Postgres) e a rota usa `ParseIdPipe`. Limites em `limites.ts` (`descricao` 3.500, `titulo` 255). Todo valor fora disso é 400, nunca 500; a busca `q` escapa `%`, `_` e `\`. Campo novo de texto ou id deve usar esses decoradores.
+- Comentários (`src/comentarios/`, rotas `/solicitacoes/:codigo/comentarios`): só o solicitante dono e o atendente responsável escrevem (outro atendente só lê; outro solicitante nem lê). Atendente comentando em `ABERTO` assume o chamado (reusa `gravarTransicao` de `src/solicitacoes/assuncao.ts`, com a mesma trava: o primeiro vence, o outro 409). `CONCLUIDO` é somente leitura (409). O autor edita/exclui o próprio comentário. Auditoria interna: exclusão lógica (`excluidoEm`/`excluidoPorId`; toda consulta de comentário filtra `excluidoEm: null`) e uma linha em `comentarios_revisoes` por edição, com o texto anterior; nada disso sai pela API. Excluir o chamado (UC04) apaga a trilha junto. Listagem em ordem, com cursor `proxComentario` (só os novos) e ETag. Limite do `texto`: `LIMITES.comentario` (2.000).
 - Criar solicitação: status `ABERTO`, data e usuário automáticos, e grava histórico `null → ABERTO`.
 - Status muda só em sequência `ABERTO → EM_ATENDIMENTO → CONCLUIDO`, sempre com registro em `historico_solicitacoes`.
 - Dono do chamado: quem assumiu (a transição para `EM_ATENDIMENTO`, derivada do histórico) é o responsável; qualquer atendente pode assumir um chamado `ABERTO` (o primeiro vence), mas só o responsável conclui (outro atendente recebe 403). A condição vai no `WHERE` da escrita, sem coluna nova.
@@ -44,7 +45,7 @@ Copie `.env.example` para `.env` antes de tudo.
 ## Estrutura
 - `src/prisma/`: `PrismaService` (único acesso ao banco, injetado nos demais services) e `PrismaModule` (global).
 - `src/configurar-app.ts`: `ValidationPipe` global e CORS (origens em `CORS_ORIGIN`, separadas por vírgula; vazio = nenhuma), usado por `main.ts` e pelo e2e.
-- `src/auth/`, `src/categorias/` (`GET /categorias`, só ativas), `src/solicitacoes/` e `src/dashboard/`: um módulo por área, com controller fino e regra no service. O dashboard usa SQL agregado (`$queryRaw` com `Prisma.sql`, valores sempre como parâmetros) e funções puras de período em `periodo.ts`.
+- `src/auth/`, `src/categorias/` (`GET /categorias`, só ativas), `src/solicitacoes/`, `src/comentarios/` e `src/dashboard/`: um módulo por área, com controller fino e regra no service. O dashboard usa SQL agregado (`$queryRaw` com `Prisma.sql`, valores sempre como parâmetros) e funções puras de período em `periodo.ts`.
 - `prisma/`: schema, migrations, `seed.ts`.
 - `docs/use-cases.md`: casos de uso e burndown.
 - `docs/api.md`: contrato da API para o front (URLs, payloads, erros). Atualize junto com qualquer mudança de endpoint.

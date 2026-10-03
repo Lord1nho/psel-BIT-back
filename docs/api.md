@@ -27,9 +27,9 @@ Contrato da API por funcionalidade. Os casos de uso estão em [`use-cases.md`](u
 | 400 | Validação (tipo, tamanho, limites), categoria inexistente ou inativa, filtro malformado, `:codigo` inválido |
 | 413 | Corpo da requisição acima de 100 KB |
 | 401 | Sem token, token inválido ou expirado, login incorreto |
-| 403 | Perfil sem permissão, ou solicitação de outro usuário |
-| 404 | Solicitação não existe |
-| 409 | Status não permite a operação, ou transição de status inválida |
+| 403 | Perfil sem permissão, solicitação de outro usuário, ou comentar sem ser o solicitante dono / o atendente responsável |
+| 404 | Solicitação ou comentário não existe |
+| 409 | Status não permite a operação, transição de status inválida, ou chamado concluído (comentários somente leitura) |
 
 ### Limites e regras dos campos
 
@@ -42,7 +42,8 @@ Valide o mesmo no front para evitar a ida ao servidor; o backend rejeita com **4
 | `usuario` (login) | De 1 a **255** caracteres, sem espaços nas pontas. |
 | `senha` (login) | De 1 a **128** caracteres. Os espaços fazem parte da senha (não são removidos). |
 | `q` (busca) | Até **100** caracteres; `%`, `_` e `\` valem como texto, não como curinga. |
-| `categoriaId`, `atendenteId`, `:codigo` | Inteiro de **1 a 2.147.483.647**. |
+| `texto` (comentário, criar e editar) | Texto de 1 a **2.000** caracteres, depois de remover os espaços das pontas. |
+| `categoriaId`, `atendenteId`, `:codigo`, `:comentarioId`, `proxComentario` | Inteiro de **1 a 2.147.483.647**. |
 | `pagina` / `tamanho` | `pagina` de 1 a 1.000.000; `tamanho` de 1 a 100. |
 | Corpo da requisição | Até **100 KB** no total (acima disso: 413). |
 
@@ -61,6 +62,9 @@ Valide o mesmo no front para evitar a ida ao servidor; o backend rejeita com **4
 | Consultar detalhe | só as próprias | qualquer uma |
 | Editar / excluir | só as próprias em `ABERTO` | não (403) |
 | Alterar status | não (403) | sim (assumir: qualquer atendente; depois, só o responsável) |
+| Ler comentários | só os das próprias | de qualquer chamado |
+| Comentar | só na própria (exceto concluída) | só o responsável; em `ABERTO`, comentar assume o chamado |
+| Editar / excluir comentário | só o próprio | só o próprio |
 | Dashboard | sim (só as próprias) | sim (geral, ou só as que assumiu) |
 
 Mostre editar e excluir só quando `status === 'ABERTO'` e a solicitação for do usuário; o servidor valida de qualquer forma.
@@ -233,6 +237,7 @@ Erros: **400** para `status` fora do enum, `atendente` fora de `meus`/`todos`/`s
   "categoria": { "id": 1, "nome": "TI", "ativa": true },
   "solicitante": { "id": 2, "nome": "Solicitante Um", "usuario": "solicitante.um" },
   "atendente": { "id": 1, "nome": "Atendente Um" },
+  "totalComentarios": 2,
   "historico": [
     { "statusAnterior": null, "statusNovo": "ABERTO",
       "dataAlteracao": "2026-09-30T14:22:10.123Z", "usuario": { "id": 2, "nome": "Solicitante Um" } },
@@ -243,6 +248,8 @@ Erros: **400** para `status` fora do enum, `atendente` fora de `meus`/`todos`/`s
 ```
 
 `atendente` é o atendente responsável (quem assumiu o chamado), ou `null` se ninguém assumiu. É com ele que o front compara o usuário logado para habilitar a mudança de status (seção 9).
+
+`totalComentarios` é a quantidade de comentários do chamado (para um contador na tela; as mensagens vêm da seção 11).
 
 O histórico vem em ordem cronológica; `statusAnterior` é `null` na primeira linha. Erros: **403** (solicitante consultando solicitação alheia), **404**.
 
@@ -355,3 +362,70 @@ Exemplos: `GET /dashboard?periodo=7d` · `GET /dashboard?periodo=30d&categoriaId
 - Clique numa barra de setor pode aplicar `categoriaId`; os botões **Tudo / 30 dias / 7 dias** enviam `periodo`; o seletor de datas envia `dataInicio`/`dataFim` (e deixa de enviar `periodo`).
 
 Erros: **400** para `periodo`/`agrupamento`/`escopo` fora dos valores, `periodo` junto de datas, data inexistente, `dataInicio` maior que `dataFim`, `categoriaId` não numérico, `fuso` inválido, parâmetro desconhecido, série com mais de 400 pontos ou `escopo` enviado por solicitante; **401** sem token.
+
+## 11. Comentários (comunicação no chamado)
+
+Conversa entre o **solicitante dono** e o **atendente responsável**, dentro do chamado. Rotas aninhadas: `/solicitacoes/:codigo/comentarios`.
+
+### Quem pode o quê
+
+| Situação | Ler | Comentar |
+|---|---|---|
+| Solicitante dono | sim | sim (exceto chamado `CONCLUIDO`) |
+| Outro solicitante | **403** | **403** |
+| Atendente, chamado `ABERTO` | sim | sim, e **comentar assume o chamado** (vira `EM_ATENDIMENTO` e o atendente é o responsável; o primeiro a chegar vence, o outro recebe **409**) |
+| Atendente responsável, `EM_ATENDIMENTO` | sim | sim |
+| Outro atendente, `EM_ATENDIMENTO` | sim | **403** com o nome do responsável |
+| Qualquer um, `CONCLUIDO` | sim | **409** (somente leitura: criar, editar e excluir) |
+
+Apagar o comentário que assumiu o chamado **não** devolve o chamado para `ABERTO` (o histórico não muda). Ao excluir um chamado (só em `ABERTO`), os comentários vão junto.
+
+**Auditoria (interna, sem impacto no front):** a exclusão de um comentário é lógica (some de `GET`, de `total` e de `totalComentarios`, e um novo `PATCH`/`DELETE` nele dá **404**), e cada edição guarda o texto anterior. Nada disso aparece na resposta da API; fica só no banco.
+
+### `GET /solicitacoes/:codigo/comentarios`
+
+Do mais antigo para o mais novo. Query (opcionais): `proxComentario` (cursor, veja abaixo) e `limite` (1 a 100, padrão 50).
+
+**200**
+```json
+{
+  "itens": [
+    { "id": 41, "texto": "Qual o patrimônio?", "dataCriacao": "2026-10-01T14:00:00.000Z", "dataEdicao": null,
+      "autor": { "id": 1, "nome": "Atendente Um", "perfil": "ATENDENTE" } },
+    { "id": 42, "texto": "É o 1234", "dataCriacao": "2026-10-01T14:05:00.000Z", "dataEdicao": "2026-10-01T14:06:00.000Z",
+      "autor": { "id": 2, "nome": "Solicitante Um", "perfil": "SOLICITANTE" } }
+  ],
+  "total": 2,
+  "proxComentario": 42
+}
+```
+
+- `total`: todos os comentários do chamado (independe do cursor).
+- `dataEdicao`: `null` se nunca foi editado (mostre "editado" quando vier preenchido).
+- **`proxComentario`** é o cursor da conversa: o `id` do último comentário devolvido (ou o que você enviou, se não houve novidade; `null` se não há comentários). Reenvie-o na próxima chamada (`?proxComentario=42`) para receber **só os comentários posteriores**.
+
+**Como o front usa:**
+1. Ao abrir o chamado, chame **sem** parâmetros e exiba **todos** os comentários desde o primeiro. Se `itens` vier com `limite` itens, peça a continuação com o `proxComentario` recebido até vir menos que o limite.
+2. Com a conversa aberta, repita `?proxComentario=<último>` a cada 10 a 30 s e acrescente o que vier ao fim da lista. Sem novidade, `itens` é `[]` (a resposta traz `ETag` e `Cache-Control: private, no-cache`, então o navegador recebe **304** sem corpo).
+3. O cursor só traz comentários **novos**: edições e exclusões de comentários antigos aparecem ao recarregar a conversa inteira (chame de novo sem `proxComentario`), e as suas próprias ações você já aplica na tela.
+4. Depois de enviar um comentário como atendente num chamado `ABERTO`, recarregue o detalhe: o status passou a `EM_ATENDIMENTO`.
+
+### `POST /solicitacoes/:codigo/comentarios`
+
+```json
+{ "texto": "Pode me passar o número do patrimônio?" }
+```
+
+**201**: o comentário criado, no mesmo formato de um item de `itens`. Erros: **400** (texto vazio, só espaços, acima de 2.000 caracteres, com caractere nulo ou campo extra), **403**, **404**, **409** (chamado concluído, ou outro atendente assumiu o chamado antes).
+
+### `PATCH /solicitacoes/:codigo/comentarios/:comentarioId`
+
+```json
+{ "texto": "Texto corrigido" }
+```
+
+**200**: o comentário atualizado, com `dataEdicao` preenchida. Só o **autor** edita (**403** para os demais). Erros: **400**, **403**, **404** (comentário inexistente ou de outro chamado), **409** (chamado concluído).
+
+### `DELETE /solicitacoes/:codigo/comentarios/:comentarioId`
+
+**204** sem corpo. Só o **autor** exclui. Para a API o comentário deixa de existir (a cópia fica guardada internamente, para auditoria). Erros: **403**, **404**, **409** (chamado concluído).

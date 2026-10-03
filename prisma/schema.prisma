@@ -30,8 +30,11 @@ model Usuario {
   senha   String        @db.VarChar(255)
   perfil  PerfilUsuario @default(SOLICITANTE)
 
-  solicitacoes Solicitacao[]
-  historico    HistoricoSolicitacao[]
+  solicitacoes         Solicitacao[]
+  historico            HistoricoSolicitacao[]
+  comentarios          Comentario[]           @relation("ComentarioAutor")
+  comentariosExcluidos Comentario[]           @relation("ComentarioExcluidoPor")
+  revisoesDeComentario ComentarioRevisao[]
 
   @@map("usuarios")
 }
@@ -55,9 +58,10 @@ model Solicitacao {
   dataCriacao DateTime          @default(now()) @map("data_criacao") @db.Timestamptz(6)
   usuarioId   Int               @map("usuario_id")
 
-  categoria Categoria              @relation(fields: [categoriaId], references: [id])
-  usuario   Usuario                @relation(fields: [usuarioId], references: [id])
-  historico HistoricoSolicitacao[]
+  categoria   Categoria              @relation(fields: [categoriaId], references: [id])
+  usuario     Usuario                @relation(fields: [usuarioId], references: [id])
+  historico   HistoricoSolicitacao[]
+  comentarios Comentario[]
 
   @@index([usuarioId, dataCriacao])
   @@index([categoriaId])
@@ -81,4 +85,41 @@ model HistoricoSolicitacao {
   @@index([usuarioId])
   @@index([statusNovo, solicitacaoCodigo])
   @@map("historico_solicitacoes")
+}
+
+// Exclusão lógica (excluidoEm/excluidoPor) e histórico de edições (ComentarioRevisao): trilha de
+// auditoria interna, nunca exposta pela API.
+model Comentario {
+  id                Int       @id @default(autoincrement())
+  solicitacaoCodigo Int       @map("solicitacao_codigo")
+  usuarioId         Int       @map("usuario_id")
+  texto             String
+  dataCriacao       DateTime  @default(now()) @map("data_criacao") @db.Timestamptz(6)
+  dataEdicao        DateTime? @map("data_edicao") @db.Timestamptz(6)
+  excluidoEm        DateTime? @map("excluido_em") @db.Timestamptz(6)
+  excluidoPorId     Int?      @map("excluido_por_id")
+
+  solicitacao Solicitacao         @relation(fields: [solicitacaoCodigo], references: [codigo], onDelete: Cascade)
+  usuario     Usuario             @relation("ComentarioAutor", fields: [usuarioId], references: [id])
+  excluidoPor Usuario?            @relation("ComentarioExcluidoPor", fields: [excluidoPorId], references: [id])
+  revisoes    ComentarioRevisao[]
+
+  @@index([solicitacaoCodigo, id])
+  @@index([usuarioId])
+  @@map("comentarios")
+}
+
+// Uma linha por edição, com o texto que valia ANTES dela.
+model ComentarioRevisao {
+  id            Int      @id @default(autoincrement())
+  comentarioId  Int      @map("comentario_id")
+  textoAnterior String   @map("texto_anterior")
+  editadoPorId  Int      @map("editado_por_id")
+  dataRevisao   DateTime @default(now()) @map("data_revisao") @db.Timestamptz(6)
+
+  comentario Comentario @relation(fields: [comentarioId], references: [id], onDelete: Cascade)
+  editadoPor Usuario    @relation(fields: [editadoPorId], references: [id])
+
+  @@index([comentarioId])
+  @@map("comentarios_revisoes")
 }

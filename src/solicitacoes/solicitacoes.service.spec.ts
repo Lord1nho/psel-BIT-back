@@ -582,8 +582,23 @@ describe('SolicitacoesService', () => {
       codigo: 10,
       usuarioId: 5,
       usuario: { id: 5, nome: 'Solicitante Um', usuario: 'solicitante.um' },
+      _count: { comentarios: 3 },
       historico: [],
     };
+
+    it('a contagem de comentários do detalhe ignora os excluídos', async () => {
+      findSolicitacao.mockResolvedValue(detalhe);
+
+      await service.consultar(10, autor);
+
+      expect(findSolicitacao).toHaveBeenCalledWith(
+        expect.objectContaining({
+          include: expect.objectContaining({
+            _count: { select: { comentarios: { where: { excluidoEm: null } } } },
+          }),
+        }),
+      );
+    });
 
     it('retorna 404 quando não existe', async () => {
       findSolicitacao.mockResolvedValue(null);
@@ -602,8 +617,10 @@ describe('SolicitacoesService', () => {
         codigo: 10,
         solicitante: { id: 5, usuario: 'solicitante.um' },
         historico: [],
+        totalComentarios: 3,
       });
       expect(resultado).not.toHaveProperty('usuario');
+      expect(resultado).not.toHaveProperty('_count');
     });
 
     it('solicitante não consulta solicitação de outro (403)', async () => {
@@ -624,7 +641,12 @@ describe('SolicitacoesService', () => {
   });
 
   describe('consultar: atendente responsável', () => {
-    const base = { codigo: 10, usuarioId: 5, usuario: { id: 5, nome: 'S', usuario: 's' } };
+    const base = {
+      codigo: 10,
+      usuarioId: 5,
+      usuario: { id: 5, nome: 'S', usuario: 's' },
+      _count: { comentarios: 0 },
+    };
 
     it('traz o atendente que assumiu o chamado', async () => {
       findSolicitacao.mockResolvedValue({
