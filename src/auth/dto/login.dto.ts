@@ -1,11 +1,11 @@
-import { IsNotEmpty, IsString } from 'class-validator';
+import { TextoObrigatorio } from '../../common/validacao/decorators.js';
+import { LIMITES } from '../../common/validacao/limites.js';
 
 export class LoginDto {
-  @IsString()
-  @IsNotEmpty()
+  @TextoObrigatorio(LIMITES.usuario)
   usuario!: string;
 
-  @IsString()
-  @IsNotEmpty()
+  // Os espaços da senha fazem parte dela: não é aparada.
+  @TextoObrigatorio(LIMITES.senha, { aparar: false })
   senha!: string;
 }

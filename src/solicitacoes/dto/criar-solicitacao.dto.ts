@@ -1,16 +1,16 @@
-import { IsInt, IsNotEmpty, IsString, MaxLength, Min } from 'class-validator';
+import {
+  IdInteiro,
+  TextoObrigatorio,
+} from '../../common/validacao/decorators.js';
+import { LIMITES } from '../../common/validacao/limites.js';
 
 export class CriarSolicitacaoDto {
-  @IsString()
-  @IsNotEmpty()
-  @MaxLength(255)
+  @TextoObrigatorio(LIMITES.titulo)
   titulo!: string;
 
-  @IsString()
-  @IsNotEmpty()
+  @TextoObrigatorio(LIMITES.descricao)
   descricao!: string;
 
-  @IsInt()
-  @Min(1)
+  @IdInteiro()
   categoriaId!: number;
 }

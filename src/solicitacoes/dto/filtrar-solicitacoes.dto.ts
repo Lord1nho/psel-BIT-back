@@ -10,6 +10,12 @@ import {
   MaxLength,
   Min,
 } from 'class-validator';
+import {
+  IdInteiro,
+  SemByteNulo,
+  aparar,
+} from '../../common/validacao/decorators.js';
+import { LIMITES } from '../../common/validacao/limites.js';
 import { StatusSolicitacao } from '../../generated/prisma/client.js';
 
 const DATA_ISO = /^\d{4}-\d{2}-\d{2}$/;
@@ -42,8 +48,7 @@ export class FiltrarSolicitacoesDto {
 
   @IsOptional()
   @Type(() => Number)
-  @IsInt()
-  @Min(1)
+  @IdInteiro()
   categoriaId?: number;
 
   // meus = chamados que o atendente logado assumiu (resolvido pelo token, só atendente);
@@ -56,15 +61,15 @@ export class FiltrarSolicitacoesDto {
   // Não combina com "atendente".
   @IsOptional()
   @Type(() => Number)
-  @IsInt()
-  @Min(1)
+  @IdInteiro()
   atendenteId?: number;
 
   // Busca livre (título, solicitante ou código), pensada para digitação dinâmica.
   @IsOptional()
-  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
+  @Transform(aparar)
   @IsString()
-  @MaxLength(100)
+  @MaxLength(LIMITES.busca)
+  @SemByteNulo()
   q?: string;
 
   @IsOptional()

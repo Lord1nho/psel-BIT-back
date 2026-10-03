@@ -6,11 +6,11 @@ import {
   Header,
   HttpCode,
   Param,
-  ParseIntPipe,
   Patch,
   Post,
   Query,
 } from '@nestjs/common';
+import { ParseIdPipe } from '../common/pipes/parse-id.pipe.js';
 import { UsuarioAtual } from '../common/decorators/usuario-atual.decorator.js';
 import { Roles } from '../common/decorators/roles.decorator.js';
 import type { UsuarioAutenticado } from '../common/types/usuario-autenticado.js';
@@ -47,7 +47,7 @@ export class SolicitacoesController {
 
   @Get(':codigo')
   consultar(
-    @Param('codigo', ParseIntPipe) codigo: number,
+    @Param('codigo', ParseIdPipe) codigo: number,
     @UsuarioAtual() usuario: UsuarioAutenticado,
   ) {
     return this.solicitacoesService.consultar(codigo, usuario);
@@ -56,7 +56,7 @@ export class SolicitacoesController {
   @Patch(':codigo')
   @Roles(PerfilUsuario.SOLICITANTE)
   editar(
-    @Param('codigo', ParseIntPipe) codigo: number,
+    @Param('codigo', ParseIdPipe) codigo: number,
     @Body() dto: EditarSolicitacaoDto,
     @UsuarioAtual() usuario: UsuarioAutenticado,
   ) {
@@ -66,7 +66,7 @@ export class SolicitacoesController {
   @Patch(':codigo/status')
   @Roles(PerfilUsuario.ATENDENTE)
   alterarStatus(
-    @Param('codigo', ParseIntPipe) codigo: number,
+    @Param('codigo', ParseIdPipe) codigo: number,
     @Body() dto: AlterarStatusDto,
     @UsuarioAtual() usuario: UsuarioAutenticado,
   ) {
@@ -77,7 +77,7 @@ export class SolicitacoesController {
   @Roles(PerfilUsuario.SOLICITANTE)
   @HttpCode(204)
   excluir(
-    @Param('codigo', ParseIntPipe) codigo: number,
+    @Param('codigo', ParseIdPipe) codigo: number,
     @UsuarioAtual() usuario: UsuarioAutenticado,
   ) {
     return this.solicitacoesService.excluir(codigo, usuario);

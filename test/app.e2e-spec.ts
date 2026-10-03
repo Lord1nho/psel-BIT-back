@@ -1434,4 +1434,209 @@ describe('Autenticação e solicitações (e2e)', () => {
       expect(terceira.body.totais.total).toBe(primeira.body.totais.total + 1);
     });
   });
+
+  describe('validação das entradas de texto e numéricas', () => {
+    const marca = `VAL${Date.now()}`;
+    const INT_MAX = 2_147_483_647;
+    const NUL = '\u0000';
+    let solicitante: { Authorization: string };
+    let atendente: { Authorization: string };
+    const criados: number[] = [];
+
+    const post = (corpo: object) =>
+      request(app.getHttpServer()).post('/solicitacoes').set(solicitante).send(corpo);
+    const criarOk = async (titulo: string, descricao = 'descrição', categoriaId = 1) => {
+      const res = await post({ titulo, descricao, categoriaId }).expect(201);
+      criados.push(res.body.codigo);
+      return res.body as { codigo: number; titulo: string; descricao: string };
+    };
+    const lista = (query: string) =>
+      request(app.getHttpServer()).get(`/solicitacoes?${query}`).set(atendente);
+
+    beforeAll(async () => {
+      const { body: s } = await login('solicitante.um');
+      const { body: a } = await login('atendente.um');
+      solicitante = { Authorization: `Bearer ${s.accessToken}` };
+      atendente = { Authorization: `Bearer ${a.accessToken}` };
+    });
+
+    afterAll(async () => {
+      await app
+        .get(PrismaService)
+        .solicitacao.deleteMany({ where: { codigo: { in: criados } } });
+    });
+
+    describe('criar', () => {
+      it('rejeita título e descrição só com espaços (400)', async () => {
+        await post({ titulo: '     ', descricao: 'ok', categoriaId: 1 }).expect(400);
+        await post({ titulo: 'ok', descricao: '\n  \t ', categoriaId: 1 }).expect(400);
+      });
+
+      it('apara os espaços das pontas ao gravar', async () => {
+        const c = await criarOk(`  ${marca} aparado  `, '  texto  ');
+        expect(c.titulo).toBe(`${marca} aparado`);
+        expect(c.descricao).toBe('texto');
+      });
+
+      it('título: 255 caracteres passam e 256 dão 400', async () => {
+        await criarOk('t'.repeat(255));
+        await post({ titulo: 't'.repeat(256), descricao: 'x', categoriaId: 1 }).expect(400);
+      });
+
+      it('descrição: 3.500 caracteres passam e 3.501 dão 400', async () => {
+        await criarOk(`${marca} descrição no limite`, 'd'.repeat(3500));
+        await post({ titulo: 'x', descricao: 'd'.repeat(3501), categoriaId: 1 }).expect(400);
+      });
+
+      it('caractere nulo no título ou na descrição dá 400 (antes era 500)', async () => {
+        await post({ titulo: `a${NUL}b`, descricao: 'x', categoriaId: 1 }).expect(400);
+        await post({ titulo: 'x', descricao: `a${NUL}b`, categoriaId: 1 }).expect(400);
+      });
+
+      it('categoriaId acima do limite do banco dá 400 (antes era 500)', async () => {
+        await post({ titulo: 'x', descricao: 'x', categoriaId: INT_MAX + 1 }).expect(400);
+        await post({ titulo: 'x', descricao: 'x', categoriaId: 99999999999999 }).expect(400);
+      });
+
+      it('HTML no texto é guardado como texto e devolvido igual (o front escapa)', async () => {
+        const c = await criarOk(`${marca} <b>negrito</b>`, '<script>alert(1)</script>');
+        const detalhe = await request(app.getHttpServer())
+          .get(`/solicitacoes/${c.codigo}`)
+          .set(solicitante)
+          .expect(200);
+        expect(detalhe.body.descricao).toBe('<script>alert(1)</script>');
+        expect(detalhe.headers['content-type']).toMatch(/application\/json/);
+      });
+    });
+
+    describe('editar', () => {
+      let codigo: number;
+      beforeAll(async () => {
+        codigo = (await criarOk(`${marca} para editar`)).codigo;
+      });
+      const patch = (corpo: object) =>
+        request(app.getHttpServer()).patch(`/solicitacoes/${codigo}`).set(solicitante).send(corpo);
+
+      it('rejeita texto só com espaços, acima do limite e com byte nulo (400)', async () => {
+        await patch({ titulo: '    ' }).expect(400);
+        await patch({ descricao: '   ' }).expect(400);
+        await patch({ titulo: 't'.repeat(256) }).expect(400);
+        await patch({ descricao: 'd'.repeat(3501) }).expect(400);
+        await patch({ titulo: `a${NUL}b` }).expect(400);
+        await patch({ descricao: `a${NUL}b` }).expect(400);
+      });
+
+      it('categoriaId acima do limite dá 400 (antes era 500)', async () => {
+        await patch({ categoriaId: INT_MAX + 1 }).expect(400);
+      });
+
+      it('edição válida continua funcionando e apara os espaços', async () => {
+        const res = await patch({ titulo: `  ${marca} editado  `, descricao: 'd'.repeat(3500) }).expect(200);
+        expect(res.body.titulo).toBe(`${marca} editado`);
+        expect(res.body.descricao).toHaveLength(3500);
+      });
+    });
+
+    describe('login', () => {
+      const entrar = (corpo: object) => request(app.getHttpServer()).post('/auth/login').send(corpo);
+
+      it('rejeita usuário e senha fora dos limites e com byte nulo (400)', async () => {
+        await entrar({ usuario: 'u'.repeat(256), senha: 'x' }).expect(400);
+        await entrar({ usuario: 'a', senha: 's'.repeat(129) }).expect(400);
+        await entrar({ usuario: `a${NUL}b`, senha: 'x' }).expect(400);
+        await entrar({ usuario: 'a', senha: `a${NUL}b` }).expect(400);
+        await entrar({ usuario: '   ', senha: 'x' }).expect(400);
+      });
+
+      it('credenciais erradas dentro dos limites continuam dando 401', async () => {
+        await entrar({ usuario: 'u'.repeat(255), senha: 's'.repeat(128) }).expect(401);
+        await entrar({ usuario: 'nao.existe', senha: 'x' }).expect(401);
+      });
+
+      it('espaços em volta do usuário são ignorados no login', async () => {
+        await entrar({ usuario: '  solicitante.um  ', senha: '123456' }).expect(200);
+      });
+    });
+
+    describe('busca livre (q)', () => {
+      it('rejeita byte nulo (400, antes era 500)', async () => {
+        await lista('q=a%00b').expect(400);
+      });
+
+      it('"%" e "_" são texto, não curingas', async () => {
+        const comPorcento = await criarOk(`${marca} desconto 100% ok`);
+        const semPorcento = await criarOk(`${marca} desconto 1000 ok`);
+        const comUnderline = await criarOk(`${marca} arquivo a_b`);
+        const semUnderline = await criarOk(`${marca} arquivo axb`);
+
+        // Sem escape, "100%" casaria "1000" e "a_b" casaria "axb".
+        const p = await lista(`q=${encodeURIComponent(`${marca} desconto 100% ok`)}`).expect(200);
+        expect(p.body.itens.map((i: { codigo: number }) => i.codigo)).toEqual([comPorcento.codigo]);
+        const u = await lista(`q=${encodeURIComponent(`${marca} arquivo a_b`)}`).expect(200);
+        expect(u.body.itens.map((i: { codigo: number }) => i.codigo)).toEqual([comUnderline.codigo]);
+        expect(semPorcento.codigo).not.toBe(comPorcento.codigo);
+        expect(semUnderline.codigo).not.toBe(comUnderline.codigo);
+      });
+
+      it('um "%" sozinho já não devolve tudo', async () => {
+        const total = (await lista('tamanho=1').expect(200)).body.total;
+        // Contagem em SQL puro por posição do caractere: o `contains` do Prisma não escapa o "%".
+        const [{ n }] = await app
+          .get(PrismaService)
+          .$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM solicitacoes WHERE position('%' in titulo) > 0`;
+        const comPorcento = Number(n);
+        const res = await lista(`q=${encodeURIComponent('%')}`).expect(200);
+        expect(res.body.total).toBe(comPorcento);
+        expect(res.body.total).toBeLessThan(total);
+      });
+
+      it('a barra invertida é texto, e a injeção de SQL não faz nada', async () => {
+        await lista(`q=${encodeURIComponent('\\')}`).expect(200);
+        const inj = await lista(`q=${encodeURIComponent("' OR '1'='1")}`).expect(200);
+        expect(inj.body.total).toBe(0);
+      });
+    });
+
+    describe('identificadores acima do limite do banco (antes davam 500)', () => {
+      it.each([
+        ['categoriaId', 'categoriaId=2147483648'],
+        ['atendenteId', 'atendenteId=99999999999'],
+      ])('listagem com %s fora do limite dá 400', async (_nome, query) => {
+        await lista(query).expect(400);
+      });
+
+      it('dashboard com categoriaId fora do limite dá 400', async () => {
+        await request(app.getHttpServer())
+          .get('/dashboard?categoriaId=99999999999')
+          .set(atendente)
+          .expect(400);
+      });
+
+      it.each(['99999999999', '2147483648', '0', '-1', 'abc', '1.5'])(
+        'rota com código %s dá 400 em GET, PATCH, status e DELETE',
+        async (valor) => {
+          const http = request(app.getHttpServer());
+          await http.get(`/solicitacoes/${valor}`).set(atendente).expect(400);
+          await request(app.getHttpServer())
+            .patch(`/solicitacoes/${valor}`)
+            .set(solicitante)
+            .send({ titulo: 'x' })
+            .expect(400);
+          await request(app.getHttpServer())
+            .patch(`/solicitacoes/${valor}/status`)
+            .set(atendente)
+            .send({ status: 'EM_ATENDIMENTO' })
+            .expect(400);
+          await request(app.getHttpServer()).delete(`/solicitacoes/${valor}`).set(solicitante).expect(400);
+        },
+      );
+
+      it('o maior código válido responde 404 (existe como formato, não como chamado)', async () => {
+        await request(app.getHttpServer())
+          .get(`/solicitacoes/${INT_MAX}`)
+          .set(atendente)
+          .expect(404);
+      });
+    });
+  });
 });
