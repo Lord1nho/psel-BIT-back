@@ -15,7 +15,10 @@ import { PrismaService } from '../prisma/prisma.service.js';
 import type { AlterarStatusDto } from './dto/alterar-status.dto.js';
 import type { CriarSolicitacaoDto } from './dto/criar-solicitacao.dto.js';
 import type { EditarSolicitacaoDto } from './dto/editar-solicitacao.dto.js';
-import type { FiltrarSolicitacoesDto } from './dto/filtrar-solicitacoes.dto.js';
+import {
+  TAMANHO_PADRAO,
+  type FiltrarSolicitacoesDto,
+} from './dto/filtrar-solicitacoes.dto.js';
 
 const MSG_SOMENTE_ABERTO =
   'Só é possível alterar solicitações com status ABERTO';
@@ -62,51 +65,82 @@ export class SolicitacoesService {
     if (usuario.perfil === PerfilUsuario.SOLICITANTE) {
       where.usuarioId = usuario.id;
     }
-    if (filtros.status) where.status = filtros.status;
+    if (filtros.status?.length) where.status = { in: filtros.status };
     if (filtros.categoriaId) where.categoriaId = filtros.categoriaId;
+    if (filtros.atendenteId) {
+      // Atendente = quem moveu o chamado para EM_ATENDIMENTO (a transição é sequencial,
+      // então há no máximo uma linha dessas por chamado).
+      where.historico = {
+        some: {
+          statusNovo: StatusSolicitacao.EM_ATENDIMENTO,
+          usuarioId: filtros.atendenteId,
+        },
+      };
+    }
     if (filtros.q) where.OR = this.montarBuscaLivre(filtros.q);
 
     const periodo = this.montarPeriodo(filtros.dataInicio, filtros.dataFim);
     if (periodo) where.dataCriacao = periodo;
 
-    const solicitacoes = await this.prisma.solicitacao.findMany({
-      where,
-      orderBy: { dataCriacao: 'desc' },
-      select: {
-        codigo: true,
-        titulo: true,
-        status: true,
-        dataCriacao: true,
-        categoria: { select: { id: true, nome: true } },
-        usuario: { select: { id: true, nome: true } },
-        // No máximo 3 linhas por solicitação; só serve para derivar as colunas abaixo.
-        historico: {
-          orderBy: [{ dataAlteracao: 'asc' }, { id: 'asc' }],
-          select: {
-            statusNovo: true,
-            dataAlteracao: true,
-            usuario: { select: { id: true, nome: true } },
+    const pagina = filtros.pagina ?? 1;
+    const tamanho = filtros.tamanho ?? TAMANHO_PADRAO;
+
+    // Cada página lê só as próprias linhas (take/skip); o count devolve apenas o total
+    // com os mesmos filtros e escopo, para montar a paginação. As duas consultas rodam
+    // em paralelo (conexões distintas do pool): uma transação em lista não daria um
+    // instantâneo único em read committed e faz o driver pg avisar de consultas concorrentes.
+    const [total, solicitacoes] = await Promise.all([
+      this.prisma.solicitacao.count({ where }),
+      this.prisma.solicitacao.findMany({
+        where,
+        // O código desempata datas iguais: a ordem entre páginas fica estável.
+        orderBy: [{ dataCriacao: 'desc' }, { codigo: 'desc' }],
+        skip: (pagina - 1) * tamanho,
+        take: tamanho,
+        select: {
+          codigo: true,
+          titulo: true,
+          status: true,
+          dataCriacao: true,
+          categoria: { select: { id: true, nome: true } },
+          usuario: { select: { id: true, nome: true } },
+          // No máximo 3 linhas por solicitação; só serve para derivar as colunas abaixo.
+          historico: {
+            orderBy: [{ dataAlteracao: 'asc' }, { id: 'asc' }],
+            select: {
+              statusNovo: true,
+              dataAlteracao: true,
+              usuario: { select: { id: true, nome: true } },
+            },
           },
         },
-      },
-    });
+      }),
+    ]);
 
-    return solicitacoes.map(
+    const itens = solicitacoes.map(
       ({ usuario: solicitante, historico, ...resto }) => ({
         ...resto,
         solicitante,
         // Quem assumiu o chamado (ABERTO → EM_ATENDIMENTO); null se ainda não assumido.
         atendente:
-          historico.find((h) => h.statusNovo === StatusSolicitacao.EM_ATENDIMENTO)
-            ?.usuario ?? null,
+          historico.find(
+            (h) => h.statusNovo === StatusSolicitacao.EM_ATENDIMENTO,
+          )?.usuario ?? null,
         // Última mudança de status (edição de título/descrição não conta).
-        ultimaAtualizacao:
-          historico.at(-1)?.dataAlteracao ?? resto.dataCriacao,
+        ultimaAtualizacao: historico.at(-1)?.dataAlteracao ?? resto.dataCriacao,
         dataConclusao:
           historico.find((h) => h.statusNovo === StatusSolicitacao.CONCLUIDO)
             ?.dataAlteracao ?? null,
       }),
     );
+
+    return {
+      itens,
+      total,
+      pagina,
+      tamanho,
+      totalPaginas: Math.ceil(total / tamanho),
+    };
   }
 
   async consultar(codigo: number, usuario: UsuarioAutenticado) {
@@ -243,7 +277,9 @@ export class SolicitacoesService {
   private montarPeriodo(dataInicio?: string, dataFim?: string) {
     if (!dataInicio && !dataFim) return undefined;
 
-    const inicio = dataInicio ? new Date(`${dataInicio}T00:00:00.000Z`) : undefined;
+    const inicio = dataInicio
+      ? new Date(`${dataInicio}T00:00:00.000Z`)
+      : undefined;
     const fim = dataFim ? new Date(`${dataFim}T00:00:00.000Z`) : undefined;
     if (
       (inicio && Number.isNaN(inicio.getTime())) ||
@@ -252,7 +288,9 @@ export class SolicitacoesService {
       throw new BadRequestException('Data inválida no filtro de período');
     }
     if (inicio && fim && inicio > fim) {
-      throw new BadRequestException('dataInicio não pode ser maior que dataFim');
+      throw new BadRequestException(
+        'dataInicio não pode ser maior que dataFim',
+      );
     }
 
     // dataFim é inclusiva: vale até o fim daquele dia (UTC).

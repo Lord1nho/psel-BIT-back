@@ -23,6 +23,8 @@ async function main() {
   const usuarios = [
     { nome: 'Atendente Um', usuario: 'atendente.um', perfil: PerfilUsuario.ATENDENTE },
     { nome: 'Solicitante Um', usuario: 'solicitante.um', perfil: PerfilUsuario.SOLICITANTE },
+    { nome: 'Atendente Dois', usuario: 'atendente.dois', perfil: PerfilUsuario.ATENDENTE },
+    { nome: 'Solicitante Dois', usuario: 'solicitante.dois', perfil: PerfilUsuario.SOLICITANTE },
   ];
 
   for (const u of usuarios) {

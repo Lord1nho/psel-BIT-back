@@ -14,6 +14,7 @@ describe('SolicitacoesService', () => {
   const updateMany = vi.fn();
   const deleteMany = vi.fn();
   const findMany = vi.fn();
+  const contar = vi.fn();
   const criarHistorico = vi.fn();
   let service: SolicitacoesService;
 
@@ -30,6 +31,7 @@ describe('SolicitacoesService', () => {
       findUnique: findSolicitacao,
       findUniqueOrThrow: findSolicitacaoOrThrow,
       findMany,
+      count: contar,
       updateMany,
       deleteMany,
     };
@@ -38,8 +40,11 @@ describe('SolicitacoesService', () => {
       categoria: { findUnique: findCategoria },
       solicitacao,
       historicoSolicitacao,
-      $transaction: (fn: (tx: unknown) => unknown) =>
-        fn({ solicitacao, historicoSolicitacao }),
+      // Aceita as duas formas: callback (transação interativa) e lista de operações.
+      $transaction: (arg: unknown) =>
+        typeof arg === 'function'
+          ? arg({ solicitacao, historicoSolicitacao })
+          : Promise.all(arg as Promise<unknown>[]),
     } as never);
   });
 
@@ -226,21 +231,29 @@ describe('SolicitacoesService', () => {
 
     const whereUsado = () => findMany.mock.calls[0][0].where;
 
-    beforeEach(() => findMany.mockResolvedValue([linha]));
+    beforeEach(() => {
+      findMany.mockResolvedValue([linha]);
+      contar.mockResolvedValue(1);
+    });
 
     it('solicitante só enxerga as próprias e recebe o campo solicitante', async () => {
       const resultado = await service.listar({}, autor);
 
       expect(whereUsado()).toEqual({ usuarioId: 5 });
-      expect(findMany.mock.calls[0][0].orderBy).toEqual({ dataCriacao: 'desc' });
-      expect(resultado[0]).toMatchObject({
+      expect(findMany.mock.calls[0][0].orderBy).toEqual([
+        { dataCriacao: 'desc' },
+        { codigo: 'desc' },
+      ]);
+      expect(resultado.itens[0]).toMatchObject({
         solicitante: { id: 5, nome: 'Solicitante Um' },
       });
-      expect(resultado[0]).not.toHaveProperty('usuario');
+      expect(resultado.itens[0]).not.toHaveProperty('usuario');
     });
 
     it('chamado só aberto: sem atendente nem conclusão, atualizado na criação', async () => {
-      const [item] = await service.listar({}, atendente);
+      const {
+        itens: [item],
+      } = await service.listar({}, atendente);
 
       expect(item.atendente).toBeNull();
       expect(item.dataConclusao).toBeNull();
@@ -260,7 +273,9 @@ describe('SolicitacoesService', () => {
         },
       ]);
 
-      const [item] = await service.listar({}, atendente);
+      const {
+        itens: [item],
+      } = await service.listar({}, atendente);
 
       expect(item.atendente).toEqual({ id: 9, nome: 'Atendente Um' });
       expect(item.ultimaAtualizacao).toEqual(new Date('2026-09-30T11:00:00Z'));
@@ -280,7 +295,9 @@ describe('SolicitacoesService', () => {
         },
       ]);
 
-      const [item] = await service.listar({}, atendente);
+      const {
+        itens: [item],
+      } = await service.listar({}, atendente);
 
       expect(item.atendente).toEqual({ id: 9, nome: 'Atendente Um' });
       expect(item.dataConclusao).toEqual(new Date('2026-09-30T12:00:00Z'));
@@ -294,9 +311,114 @@ describe('SolicitacoesService', () => {
     });
 
     it('aplica status e categoria', async () => {
-      await service.listar({ status: 'CONCLUIDO', categoriaId: 2 }, atendente);
+      await service.listar({ status: ['CONCLUIDO'], categoriaId: 2 }, atendente);
 
-      expect(whereUsado()).toEqual({ status: 'CONCLUIDO', categoriaId: 2 });
+      expect(whereUsado()).toEqual({
+        status: { in: ['CONCLUIDO'] },
+        categoriaId: 2,
+      });
+    });
+
+    it('vários status viram um filtro "in" (aberto + em atendimento)', async () => {
+      await service.listar({ status: ['ABERTO', 'EM_ATENDIMENTO'] }, atendente);
+
+      expect(whereUsado()).toEqual({
+        status: { in: ['ABERTO', 'EM_ATENDIMENTO'] },
+      });
+      expect(contar).toHaveBeenCalledWith({
+        where: { status: { in: ['ABERTO', 'EM_ATENDIMENTO'] } },
+      });
+    });
+
+    it('lista de status vazia não filtra', async () => {
+      await service.listar({ status: [] }, atendente);
+
+      expect(whereUsado()).toEqual({});
+    });
+
+    it('sem paginação informada usa a página 1 com 20 itens', async () => {
+      const resultado = await service.listar({}, atendente);
+
+      expect(findMany.mock.calls[0][0]).toMatchObject({ skip: 0, take: 20 });
+      expect(resultado).toMatchObject({ pagina: 1, tamanho: 20 });
+    });
+
+    it('calcula skip e take pela página e pelo tamanho', async () => {
+      await service.listar({ pagina: 3, tamanho: 10 }, atendente);
+
+      expect(findMany.mock.calls[0][0]).toMatchObject({ skip: 20, take: 10 });
+    });
+
+    it('devolve o envelope com total e totalPaginas', async () => {
+      contar.mockResolvedValue(153);
+
+      const resultado = await service.listar({ pagina: 2, tamanho: 20 }, atendente);
+
+      expect(resultado).toMatchObject({
+        total: 153,
+        pagina: 2,
+        tamanho: 20,
+        totalPaginas: 8,
+      });
+      expect(resultado.itens).toHaveLength(1);
+    });
+
+    it.each([
+      [0, 20, 0],
+      [20, 20, 1],
+      [21, 20, 2],
+      [100, 100, 1],
+    ])('total %i com tamanho %i resulta em %i página(s)', async (total, tamanho, esperado) => {
+      contar.mockResolvedValue(total);
+
+      const resultado = await service.listar({ tamanho }, atendente);
+
+      expect(resultado.totalPaginas).toBe(esperado);
+    });
+
+    it('atendenteId filtra pelos chamados que o atendente assumiu (histórico → EM_ATENDIMENTO)', async () => {
+      await service.listar({ atendenteId: 9 }, atendente);
+
+      const esperado = {
+        historico: { some: { statusNovo: 'EM_ATENDIMENTO', usuarioId: 9 } },
+      };
+      expect(whereUsado()).toEqual(esperado);
+      // O total conta com o mesmo filtro, senão a paginação mentiria.
+      expect(contar).toHaveBeenCalledWith({ where: esperado });
+    });
+
+    it('atendenteId combina com status, setor, busca e o escopo do solicitante', async () => {
+      await service.listar(
+        { atendenteId: 9, status: ['EM_ATENDIMENTO'], categoriaId: 2, q: '12' },
+        autor,
+      );
+
+      expect(whereUsado()).toMatchObject({
+        usuarioId: 5,
+        status: { in: ['EM_ATENDIMENTO'] },
+        categoriaId: 2,
+        historico: { some: { statusNovo: 'EM_ATENDIMENTO', usuarioId: 9 } },
+      });
+      expect(whereUsado().OR).toBeDefined();
+    });
+
+    it('sem atendenteId não toca no histórico', async () => {
+      await service.listar({ status: ['ABERTO'] }, atendente);
+
+      expect(whereUsado()).not.toHaveProperty('historico');
+    });
+
+    it('o total respeita o escopo do solicitante e os filtros', async () => {
+      await service.listar({ status: ['ABERTO'], categoriaId: 2 }, autor);
+
+      expect(contar).toHaveBeenCalledWith({
+        where: { usuarioId: 5, status: { in: ['ABERTO'] }, categoriaId: 2 },
+      });
+      expect(whereUsado()).toEqual({
+        usuarioId: 5,
+        status: { in: ['ABERTO'] },
+        categoriaId: 2,
+      });
     });
 
     it('busca livre procura em título e solicitante, sem diferenciar maiúsculas', async () => {

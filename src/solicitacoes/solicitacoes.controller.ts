@@ -3,6 +3,7 @@ import {
   Controller,
   Delete,
   Get,
+  Header,
   HttpCode,
   Param,
   ParseIntPipe,
@@ -33,7 +34,10 @@ export class SolicitacoesController {
     return this.solicitacoesService.criar(dto, usuario);
   }
 
+  // "no-cache" obriga o navegador a revalidar (ETag) e receber 304 sem corpo se nada
+  // mudou; "private" porque o conteúdo depende do perfil de quem pede.
   @Get()
+  @Header('Cache-Control', 'private, no-cache')
   listar(
     @Query() filtros: FiltrarSolicitacoesDto,
     @UsuarioAtual() usuario: UsuarioAutenticado,
