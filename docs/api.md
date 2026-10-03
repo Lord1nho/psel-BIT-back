@@ -48,7 +48,9 @@ Mostre editar e excluir só quando `status === 'ABERTO'` e a solicitação for d
 | usuario | senha | perfil |
 |---|---|---|
 | `solicitante.um` | `123456` | SOLICITANTE |
+| `solicitante.dois` | `123456` | SOLICITANTE |
 | `atendente.um` | `123456` | ATENDENTE |
+| `atendente.dois` | `123456` | ATENDENTE |
 
 ## 2. Login e sessão
 
@@ -118,28 +120,51 @@ Todos os parâmetros de query são opcionais e combináveis:
 
 | Query | Formato | Observação |
 |---|---|---|
-| `status` | enum | |
+| `status` | um ou vários: `ABERTO`, `EM_ATENDIMENTO`, `CONCLUIDO` | Vários: separados por vírgula (`status=ABERTO,EM_ATENDIMENTO`) ou o parâmetro repetido (`status=ABERTO&status=EM_ATENDIMENTO`). Ausente ou vazio = todos. Repetidos são ignorados. |
 | `categoriaId` | inteiro | |
+| `atendenteId` | inteiro | **Novo.** Só os chamados que esse atendente assumiu (o mesmo `atendente` que aparece na linha). Chamados nunca assumidos não entram. Roda no servidor, então vale para todas as páginas. |
 | `q` | texto, até 100 caracteres | Busca em parte do título, no nome ou usuário do solicitante e, se for só número, no código. Não diferencia maiúsculas. |
 | `dataInicio` | `AAAA-MM-DD` | |
 | `dataFim` | `AAAA-MM-DD` | Inclusiva. Não pode ser anterior a `dataInicio`. |
+| `pagina` | inteiro ≥ 1 (até 1.000.000) | Padrão 1. |
+| `tamanho` | inteiro de 1 a 100 | Itens por página. Padrão 20. |
 
-Exemplo: `GET /solicitacoes?q=note&status=ABERTO&dataInicio=2026-09-01&dataFim=2026-09-30`
+Exemplos:
+- `GET /solicitacoes?status=ABERTO,EM_ATENDIMENTO&pagina=1&tamanho=20` (tela inicial: abertos e em atendimento)
+- `GET /solicitacoes?q=note&status=ABERTO&dataInicio=2026-09-01&dataFim=2026-09-30&pagina=2`
+- `GET /solicitacoes?atendenteId=1&status=EM_ATENDIMENTO` (chamados em atendimento do atendente 1)
 
-**200**: array (sem paginação), da mais recente para a mais antiga:
+**200**: um envelope com a página pedida e os totais:
 ```json
-[
-  {
-    "codigo": 3, "titulo": "Notebook lento", "status": "ABERTO",
-    "dataCriacao": "2026-09-30T14:22:10.123Z",
-    "categoria": { "id": 1, "nome": "TI" },
-    "solicitante": { "id": 2, "nome": "Solicitante Um" },
-    "atendente": { "id": 1, "nome": "Atendente Um" },
-    "ultimaAtualizacao": "2026-09-30T16:40:00.000Z",
-    "dataConclusao": "2026-09-30T16:40:00.000Z"
-  }
-]
+{
+  "itens": [
+    {
+      "codigo": 3, "titulo": "Notebook lento", "status": "ABERTO",
+      "dataCriacao": "2026-09-30T14:22:10.123Z",
+      "categoria": { "id": 1, "nome": "TI" },
+      "solicitante": { "id": 2, "nome": "Solicitante Um" },
+      "atendente": { "id": 1, "nome": "Atendente Um" },
+      "ultimaAtualizacao": "2026-09-30T16:40:00.000Z",
+      "dataConclusao": "2026-09-30T16:40:00.000Z"
+    }
+  ],
+  "total": 153,
+  "pagina": 1,
+  "tamanho": 20,
+  "totalPaginas": 8
+}
 ```
+
+| Campo | Significado |
+|---|---|
+| `itens` | Os chamados da página, da mais recente para a mais antiga (o código desempata datas iguais, então a ordem entre páginas é estável). Cada item tem os mesmos campos de antes. |
+| `total` | Quantidade de chamados que atendem aos filtros (e ao escopo do perfil), somando todas as páginas. |
+| `pagina`, `tamanho` | Os valores efetivamente usados (os padrões, se não enviados). |
+| `totalPaginas` | `ceil(total / tamanho)`. É **0** quando não há resultados. |
+
+Uma página além do fim responde **200** com `itens: []` (e o `total` correto). A última página pode trazer menos itens que `tamanho`.
+
+> **Mudança de contrato:** antes a resposta era um array simples. Agora o array está em `itens`. Mudar de página, filtro ou busca é só pedir de novo com outros parâmetros, e volte a `pagina=1` quando um filtro mudar.
 
 Colunas derivadas do histórico (não existem no detalhe como campos; lá use o array `historico`):
 
@@ -149,9 +174,15 @@ Colunas derivadas do histórico (não existem no detalhe como campos; lá use o 
 | `ultimaAtualizacao` | Horário da última **mudança de status**; igual a `dataCriacao` se nunca mudou. Editar título, descrição ou categoria **não** altera este campo. |
 | `dataConclusao` | Horário em que virou `CONCLUIDO`; `null` enquanto não concluído. |
 
+**Filtro por atendente:** envie `atendenteId` com o `id` do atendente (o `usuario.id` devolvido no login serve para "só os meus"). Não filtre por atendente no front sobre a lista: com a paginação ele só enxergaria a página atual. O mesmo vale para qualquer outro filtro: use os parâmetros acima, que contam no `total`.
+
+**Filtro padrão da tela:** o backend **não** filtra nada por padrão. Para abrir a tela mostrando só "Aberto + Em atendimento", o front envia `status=ABERTO,EM_ATENDIMENTO`; para "Todos", não envia `status`.
+
 **Busca dinâmica:** chame esta mesma rota a cada digitação, com *debounce* de ~300 ms. Se o campo ficar vazio, **não envie `q=`** (volta à lista completa). O escopo do solicitante vale também na busca.
 
-Erros: **400** para `status` fora do enum, `categoriaId` não numérico, data fora do formato, período invertido ou parâmetro desconhecido.
+**Cache HTTP:** a resposta traz `Cache-Control: private, no-cache` e `ETag`. O navegador revalida a cada chamada e, se nada mudou naquela página e naquele conjunto de filtros, recebe **304** sem corpo. O dado nunca fica desatualizado, e o conteúdo é por usuário (`private`).
+
+Erros: **400** para `status` fora do enum, `categoriaId` ou `atendenteId` inválidos (não inteiro ou menor que 1), data fora do formato, período invertido, `pagina` menor que 1 ou não inteira, `tamanho` menor que 1, maior que 100 ou não inteiro, ou parâmetro desconhecido.
 
 ## 6. Detalhe e histórico
 

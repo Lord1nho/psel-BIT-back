@@ -26,12 +26,13 @@ Copie `.env.example` para `.env` antes de tudo.
 - Enums em ASCII maiúsculo, sem `@map` de valor: `StatusSolicitacao` = `ABERTO | EM_ATENDIMENTO | CONCLUIDO`; `PerfilUsuario` = `SOLICITANTE | ATENDENTE`. "Em Atendimento" é só rótulo de exibição.
 - Código em camelCase, banco em snake_case (`@map` / `@@map`). Datas em `Timestamptz(6)`.
 - `historico_solicitacoes` tem `ON DELETE CASCADE` na solicitação (necessário para o UC04).
-- Login no padrão `nome.sobrenome`. Seeds: `atendente.um` (ATENDENTE) e `solicitante.um` (SOLICITANTE), senha em `SEED_PASSWORD` (dev: 123456).
+- Login no padrão `nome.sobrenome`. Seeds: `atendente.um` e `atendente.dois` (ATENDENTE); `solicitante.um` e `solicitante.dois` (SOLICITANTE), senha em `SEED_PASSWORD` (dev: 123456).
 - **Não há cadastro** de usuários nem de categorias: ambos vêm só do seed. Categoria `ativa=false` não pode ser usada em novas solicitações.
 
 ## Regras de negócio essenciais
 - Todas as rotas exigem autenticação, exceto login.
 - Solicitante: edita/exclui só solicitações **próprias** com status `ABERTO`; lista só as próprias.
+- Listagem (`GET /solicitacoes`): paginada (`pagina`, `tamanho` até 100) e devolve `{ itens, total, pagina, tamanho, totalPaginas }`; `status` aceita vários valores (`ABERTO,EM_ATENDIMENTO`) e `atendenteId` filtra por quem assumiu o chamado. Todo filtro da listagem roda no servidor (o front não filtra sobre a página). O backend não filtra status por padrão: o front envia o padrão.
 - Atendente: lista todas, altera status e vê o dashboard geral (ou só o que assumiu). **Não abre chamados**: só atende.
 - Dashboard (`GET /dashboard`): solicitante e atendente. Solicitante vê só as próprias; atendente vê tudo ou `escopo=meus`. Tudo respeita o período (`tudo`/`30d`/`7d`/datas) e o setor escolhidos.
 - Criar solicitação: status `ABERTO`, data e usuário automáticos, e grava histórico `null → ABERTO`.

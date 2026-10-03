@@ -302,9 +302,14 @@ describe('Autenticação e solicitações (e2e)', () => {
     let codigoProprio: number;
     let codigoAlheio: number;
 
-    const listar = (auth: { Authorization: string }, query = '') =>
-      request(app.getHttpServer()).get(`/solicitacoes${query}`).set(auth);
-    const codigos = (body: { codigo: number }[]) => body.map((s) => s.codigo);
+    // Sem "tamanho" explícito pede 100 por página, para o teste não depender dos 20 do padrão.
+    const listar = (auth: { Authorization: string }, query = '') => {
+      const comTamanho = /(^|[?&])tamanho=/.test(query)
+        ? query
+        : `${query ? `${query}&` : '?'}tamanho=100`;
+      return request(app.getHttpServer()).get(`/solicitacoes${comTamanho}`).set(auth);
+    };
+    const codigos = (itens: { codigo: number }[]) => itens.map((s) => s.codigo);
 
     beforeAll(async () => {
       const prisma = app.get(PrismaService);
@@ -342,9 +347,9 @@ describe('Autenticação e solicitações (e2e)', () => {
     it('solicitante lista só as próprias, com solicitante e categoria', async () => {
       const res = await listar(solicitante).expect(200);
 
-      expect(codigos(res.body)).toContain(codigoProprio);
-      expect(codigos(res.body)).not.toContain(codigoAlheio);
-      for (const item of res.body) {
+      expect(codigos(res.body.itens)).toContain(codigoProprio);
+      expect(codigos(res.body.itens)).not.toContain(codigoAlheio);
+      for (const item of res.body.itens) {
         expect(item.solicitante.id).toBe(idSolicitante);
         expect(item.categoria).toEqual({ id: expect.any(Number), nome: expect.any(String) });
         expect(item.usuario).toBeUndefined();
@@ -354,47 +359,47 @@ describe('Autenticação e solicitações (e2e)', () => {
     it('atendente lista todas', async () => {
       const res = await listar(atendente).expect(200);
 
-      expect(codigos(res.body)).toEqual(
+      expect(codigos(res.body.itens)).toEqual(
         expect.arrayContaining([codigoProprio, codigoAlheio]),
       );
     });
 
     it('busca livre acha por parte do título, por solicitante e por código', async () => {
       const parteTitulo = await listar(atendente, `?q=notebook ${marcador.slice(0, 8)}`).expect(200);
-      expect(codigos(parteTitulo.body)).toContain(codigoProprio);
-      expect(codigos(parteTitulo.body)).not.toContain(codigoAlheio);
+      expect(codigos(parteTitulo.body.itens)).toContain(codigoProprio);
+      expect(codigos(parteTitulo.body.itens)).not.toContain(codigoAlheio);
 
       const porSolicitante = await listar(atendente, '?q=solicitante um').expect(200);
-      expect(codigos(porSolicitante.body)).toContain(codigoProprio);
-      expect(codigos(porSolicitante.body)).not.toContain(codigoAlheio);
+      expect(codigos(porSolicitante.body.itens)).toContain(codigoProprio);
+      expect(codigos(porSolicitante.body.itens)).not.toContain(codigoAlheio);
 
       const porCodigo = await listar(atendente, `?q=${codigoAlheio}`).expect(200);
-      expect(codigos(porCodigo.body)).toContain(codigoAlheio);
+      expect(codigos(porCodigo.body.itens)).toContain(codigoAlheio);
     });
 
     it('busca livre do solicitante nunca sai do próprio escopo', async () => {
       const res = await listar(solicitante, `?q=${marcador}`).expect(200);
 
-      expect(codigos(res.body)).toEqual([codigoProprio]);
+      expect(codigos(res.body.itens)).toEqual([codigoProprio]);
     });
 
     it('filtra por status, categoria e período', async () => {
       const status = await listar(atendente, `?status=CONCLUIDO&q=${marcador}`).expect(200);
-      expect(status.body).toEqual([]);
+      expect(status.body.itens).toEqual([]);
 
       const categoria = await listar(atendente, `?categoriaId=2&q=${marcador}`).expect(200);
-      expect(codigos(categoria.body)).toEqual([codigoAlheio]);
+      expect(codigos(categoria.body.itens)).toEqual([codigoAlheio]);
 
       const hoje = new Date().toISOString().slice(0, 10);
       const noPeriodo = await listar(atendente, `?dataInicio=${hoje}&dataFim=${hoje}&q=${marcador}`).expect(200);
-      expect(codigos(noPeriodo.body)).toEqual(
+      expect(codigos(noPeriodo.body.itens)).toEqual(
         expect.arrayContaining([codigoProprio, codigoAlheio]),
       );
 
       const futuro = await listar(atendente, `?dataInicio=2999-01-01&q=${marcador}`).expect(200);
-      expect(futuro.body).toEqual([]);
+      expect(futuro.body.itens).toEqual([]);
       const passado = await listar(atendente, `?dataFim=2000-01-01&q=${marcador}`).expect(200);
-      expect(passado.body).toEqual([]);
+      expect(passado.body.itens).toEqual([]);
     });
 
     it('rejeita filtros inválidos com 400', async () => {
@@ -403,6 +408,336 @@ describe('Autenticação e solicitações (e2e)', () => {
       await listar(atendente, '?dataInicio=01/09/2026').expect(400);
       await listar(atendente, '?dataInicio=2026-09-30&dataFim=2026-09-01').expect(400);
       await listar(atendente, '?usuarioId=1').expect(400);
+    });
+
+    describe('paginação, vários status e cache da listagem', () => {
+      const QTD_EXTRA = 5;
+      const statusExtras = ['ABERTO', 'ABERTO', 'EM_ATENDIMENTO', 'CONCLUIDO', 'CONCLUIDO'] as const;
+
+      const contarNoBanco = (where: object) =>
+        app.get(PrismaService).solicitacao.count({
+          where: { titulo: { contains: marcador }, ...where },
+        });
+
+      beforeAll(async () => {
+        // Mais chamados do mesmo solicitante, com datas diferentes, para paginar.
+        const prisma = app.get(PrismaService);
+        const agora = Date.now();
+        for (let i = 0; i < QTD_EXTRA; i++) {
+          await prisma.solicitacao.create({
+            data: {
+              titulo: `Paginacao ${marcador} ${i + 1}`,
+              descricao: 'Chamado para testar a paginação',
+              categoriaId: 3,
+              usuarioId: idSolicitante,
+              status: statusExtras[i],
+              dataCriacao: new Date(agora - (i + 1) * 60_000),
+            },
+          });
+        }
+      });
+
+      it('pagina sem repetir nem pular chamados, com total e totalPaginas', async () => {
+        const total = await contarNoBanco({});
+        const tamanho = 3;
+        const totalPaginas = Math.ceil(total / tamanho);
+        const vistos: number[] = [];
+
+        for (let pagina = 1; pagina <= totalPaginas; pagina++) {
+          const res = await listar(atendente, `?q=${marcador}&pagina=${pagina}&tamanho=${tamanho}`).expect(200);
+
+          expect(res.body).toMatchObject({ total, pagina, tamanho, totalPaginas });
+          expect(res.body.itens.length).toBe(
+            pagina < totalPaginas ? tamanho : total - tamanho * (totalPaginas - 1),
+          );
+          vistos.push(...codigos(res.body.itens));
+        }
+
+        expect(vistos).toHaveLength(total);
+        expect(new Set(vistos).size).toBe(total);
+        expect(total).toBeGreaterThanOrEqual(QTD_EXTRA + 2);
+      });
+
+      it('mantém a ordem da mais recente para a mais antiga entre as páginas', async () => {
+        const res = await listar(atendente, `?q=${marcador}&tamanho=100`).expect(200);
+        const datas = res.body.itens.map((s: { dataCriacao: string }) => s.dataCriacao);
+
+        expect(datas).toEqual([...datas].sort().reverse());
+      });
+
+      it('página além do fim devolve lista vazia, mantendo total e totalPaginas', async () => {
+        const total = await contarNoBanco({});
+        const res = await listar(atendente, `?q=${marcador}&pagina=50&tamanho=3`).expect(200);
+
+        expect(res.body.itens).toEqual([]);
+        expect(res.body).toMatchObject({
+          total,
+          pagina: 50,
+          tamanho: 3,
+          totalPaginas: Math.ceil(total / 3),
+        });
+      });
+
+      it('sem pagina e tamanho usa a página 1 com 20 itens', async () => {
+        const res = await request(app.getHttpServer())
+          .get('/solicitacoes')
+          .set(atendente)
+          .expect(200);
+
+        expect(res.body).toMatchObject({ pagina: 1, tamanho: 20 });
+        expect(res.body.itens).toHaveLength(20);
+      });
+
+      it('sem resultados: itens vazio, total 0 e totalPaginas 0', async () => {
+        const res = await listar(atendente, '?q=nao-existe-nenhum-chamado-assim-xyz').expect(200);
+
+        expect(res.body).toMatchObject({ itens: [], total: 0, totalPaginas: 0 });
+      });
+
+      it('o total respeita o escopo de cada perfil e bate com o banco', async () => {
+        const prisma = app.get(PrismaService);
+        const geral = await listar(atendente, '?tamanho=1').expect(200);
+        const proprio = await listar(solicitante, '?tamanho=1').expect(200);
+
+        expect(geral.body.total).toBe(await prisma.solicitacao.count());
+        expect(proprio.body.total).toBe(
+          await prisma.solicitacao.count({ where: { usuarioId: idSolicitante } }),
+        );
+        expect(proprio.body.total).toBeLessThan(geral.body.total);
+      });
+
+      it('vários status: vírgula e parâmetro repetido dão o mesmo resultado', async () => {
+        const esperado = await contarNoBanco({ status: { in: ['ABERTO', 'EM_ATENDIMENTO'] } });
+        const virgula = await listar(atendente, `?q=${marcador}&status=ABERTO,EM_ATENDIMENTO`).expect(200);
+        const repetido = await listar(atendente, `?q=${marcador}&status=ABERTO&status=EM_ATENDIMENTO`).expect(200);
+
+        expect(virgula.body.total).toBe(esperado);
+        expect(codigos(repetido.body.itens)).toEqual(codigos(virgula.body.itens));
+        for (const item of virgula.body.itens) {
+          expect(['ABERTO', 'EM_ATENDIMENTO']).toContain(item.status);
+        }
+      });
+
+      it('os filtros de status particionam o resultado (nada some, nada repete)', async () => {
+        const total = await contarNoBanco({});
+        const abertoEAtendimento = await listar(atendente, `?q=${marcador}&status=ABERTO,EM_ATENDIMENTO`).expect(200);
+        const concluidos = await listar(atendente, `?q=${marcador}&status=CONCLUIDO`).expect(200);
+
+        expect(abertoEAtendimento.body.total + concluidos.body.total).toBe(total);
+        for (const item of concluidos.body.itens) expect(item.status).toBe('CONCLUIDO');
+      });
+
+      it('um status só continua funcionando como antes', async () => {
+        const esperado = await contarNoBanco({ status: 'CONCLUIDO' });
+        const res = await listar(atendente, `?q=${marcador}&status=CONCLUIDO`).expect(200);
+
+        expect(res.body.total).toBe(esperado);
+        expect(esperado).toBeGreaterThanOrEqual(2);
+      });
+
+      it('status ausente, vazio ou repetido não filtra ou ignora duplicados', async () => {
+        const total = await contarNoBanco({});
+        const semStatus = await listar(atendente, `?q=${marcador}`).expect(200);
+        const vazio = await listar(atendente, `?q=${marcador}&status=`).expect(200);
+        const dobrado = await listar(atendente, `?q=${marcador}&status=ABERTO,ABERTO`).expect(200);
+
+        expect(semStatus.body.total).toBe(total);
+        expect(vazio.body.total).toBe(total);
+        expect(dobrado.body.total).toBe(await contarNoBanco({ status: 'ABERTO' }));
+      });
+
+      it('vários status combinam com setor e escopo do solicitante', async () => {
+        const esperado = await contarNoBanco({
+          usuarioId: idSolicitante,
+          categoriaId: 3,
+          status: { in: ['ABERTO', 'EM_ATENDIMENTO'] },
+        });
+        const res = await listar(solicitante, `?q=${marcador}&categoriaId=3&status=ABERTO,EM_ATENDIMENTO`).expect(200);
+
+        expect(res.body.total).toBe(esperado);
+        for (const item of res.body.itens) {
+          expect(item.categoria.id).toBe(3);
+          expect(item.solicitante.id).toBe(idSolicitante);
+        }
+      });
+
+    describe('filtro por atendente (roda no servidor, antes e depois da paginação)', () => {
+      let atendente2: { Authorization: string };
+      let idAtendente1: number;
+      let idAtendente2: number;
+      const assumidosPor1: number[] = [];
+      const assumidosPor2: number[] = [];
+
+      const criarEAssumir = async (quem: { Authorization: string }, titulo: string, categoriaId: number) => {
+        const res = await request(app.getHttpServer())
+          .post('/solicitacoes')
+          .set(solicitante)
+          .send({ titulo: `${titulo} ${marcador}`, descricao: 'x', categoriaId })
+          .expect(201);
+        await request(app.getHttpServer())
+          .patch(`/solicitacoes/${res.body.codigo}/status`)
+          .set(quem)
+          .send({ status: 'EM_ATENDIMENTO' })
+          .expect(200);
+        return res.body.codigo as number;
+      };
+
+      beforeAll(async () => {
+        const { body: a1 } = await login('atendente.um');
+        const { body: a2 } = await login('atendente.dois');
+        atendente2 = { Authorization: `Bearer ${a2.accessToken}` };
+        idAtendente1 = a1.usuario.id;
+        idAtendente2 = a2.usuario.id;
+
+        // atendente.um assume 3 chamados (um deles é concluído depois); atendente.dois assume 2.
+        assumidosPor1.push(await criarEAssumir(atendente, 'Assumido A', 1));
+        assumidosPor1.push(await criarEAssumir(atendente, 'Assumido B', 2));
+        assumidosPor1.push(await criarEAssumir(atendente, 'Assumido C', 1));
+        await request(app.getHttpServer())
+          .patch(`/solicitacoes/${assumidosPor1[2]}/status`)
+          .set(atendente)
+          .send({ status: 'CONCLUIDO' })
+          .expect(200);
+        assumidosPor2.push(await criarEAssumir(atendente2, 'Assumido D', 1));
+        assumidosPor2.push(await criarEAssumir(atendente2, 'Assumido E', 3));
+      });
+
+      it('devolve só os chamados que aquele atendente assumiu, e o total bate com o banco', async () => {
+        const esperado = await app.get(PrismaService).solicitacao.count({
+          where: {
+            titulo: { contains: marcador },
+            historico: { some: { statusNovo: 'EM_ATENDIMENTO', usuarioId: idAtendente1 } },
+          },
+        });
+        const res = await listar(atendente, `?q=${marcador}&atendenteId=${idAtendente1}`).expect(200);
+
+        expect(res.body.total).toBe(esperado);
+        expect(codigos(res.body.itens).sort()).toEqual(
+          expect.arrayContaining([...assumidosPor1].sort()),
+        );
+        for (const item of res.body.itens) {
+          expect(item.atendente).toEqual({ id: idAtendente1, nome: 'Atendente Um' });
+        }
+        for (const codigo of assumidosPor2) {
+          expect(codigos(res.body.itens)).not.toContain(codigo);
+        }
+      });
+
+      it('cada atendente enxerga só os seus (os conjuntos não se misturam)', async () => {
+        const um = await listar(atendente, `?q=${marcador}&atendenteId=${idAtendente1}`).expect(200);
+        const dois = await listar(atendente, `?q=${marcador}&atendenteId=${idAtendente2}`).expect(200);
+
+        expect(codigos(dois.body.itens).sort()).toEqual([...assumidosPor2].sort());
+        const emComum = codigos(um.body.itens).filter((c: number) => codigos(dois.body.itens).includes(c));
+        expect(emComum).toEqual([]);
+        for (const item of dois.body.itens) {
+          expect(item.atendente).toEqual({ id: idAtendente2, nome: 'Atendente Dois' });
+        }
+      });
+
+      it('o filtro vale em todas as páginas, não só na atual', async () => {
+        const vistos: number[] = [];
+        const primeira = await listar(atendente, `?q=${marcador}&atendenteId=${idAtendente1}&tamanho=1&pagina=1`).expect(200);
+        const totalPaginas = primeira.body.totalPaginas;
+
+        expect(totalPaginas).toBe(primeira.body.total); // 1 item por página
+        for (let pagina = 1; pagina <= totalPaginas; pagina++) {
+          const res = await listar(atendente, `?q=${marcador}&atendenteId=${idAtendente1}&tamanho=1&pagina=${pagina}`).expect(200);
+          expect(res.body.itens).toHaveLength(1);
+          expect(res.body.itens[0].atendente.id).toBe(idAtendente1);
+          vistos.push(res.body.itens[0].codigo);
+        }
+        expect(new Set(vistos).size).toBe(totalPaginas);
+        expect(vistos).toEqual(expect.arrayContaining(assumidosPor1));
+      });
+
+      it('combina com status, setor e escopo do solicitante', async () => {
+        const concluidos = await listar(atendente, `?q=${marcador}&atendenteId=${idAtendente1}&status=CONCLUIDO`).expect(200);
+        expect(codigos(concluidos.body.itens)).toEqual([assumidosPor1[2]]);
+
+        const emAtendimento = await listar(atendente, `?q=${marcador}&atendenteId=${idAtendente1}&status=EM_ATENDIMENTO`).expect(200);
+        expect(codigos(emAtendimento.body.itens).sort()).toEqual([assumidosPor1[0], assumidosPor1[1]].sort());
+
+        const setor = await listar(atendente, `?q=${marcador}&atendenteId=${idAtendente1}&categoriaId=2`).expect(200);
+        expect(codigos(setor.body.itens)).toEqual([assumidosPor1[1]]);
+
+        // O solicitante também pode filtrar os próprios chamados por atendente.
+        const proprio = await listar(solicitante, `?q=${marcador}&atendenteId=${idAtendente2}`).expect(200);
+        expect(codigos(proprio.body.itens).sort()).toEqual([...assumidosPor2].sort());
+      });
+
+      it('atendente sem chamados devolve lista vazia, e chamado nunca assumido não aparece', async () => {
+        const inexistente = await listar(atendente, '?atendenteId=999999').expect(200);
+        expect(inexistente.body).toMatchObject({ itens: [], total: 0, totalPaginas: 0 });
+
+        // O chamado "Alheio" dos testes anteriores nunca foi assumido por ninguém.
+        const res = await listar(atendente, `?q=${marcador}&atendenteId=${idAtendente1}`).expect(200);
+        for (const item of res.body.itens) expect(item.titulo).not.toMatch(/^Alheio/);
+      });
+
+      it('rejeita atendenteId inválido com 400', async () => {
+        for (const valor of ['0', '-1', 'abc', '1.5']) {
+          await listar(atendente, `?atendenteId=${valor}`).expect(400);
+        }
+      });
+    });
+
+      it('rejeita paginação e status inválidos com 400', async () => {
+        for (const query of [
+          '?pagina=0',
+          '?pagina=-1',
+          '?pagina=abc',
+          '?pagina=1.5',
+          '?tamanho=0',
+          '?tamanho=101',
+          '?tamanho=abc',
+          '?status=ABERTO,XYZ',
+          '?offset=10',
+        ]) {
+          await listar(atendente, query).expect(400);
+        }
+      });
+
+      it('aceita os limites de tamanho: 1 e 100', async () => {
+        const um = await listar(atendente, '?tamanho=1').expect(200);
+        const cem = await listar(atendente, '?tamanho=100').expect(200);
+
+        expect(um.body.itens).toHaveLength(1);
+        expect(cem.body.itens.length).toBeLessThanOrEqual(100);
+        expect(cem.body.tamanho).toBe(100);
+      });
+
+      it('revalida por ETag: 304 sem corpo se nada mudou e 200 quando algo muda', async () => {
+        const url = `/solicitacoes?q=${marcador}&tamanho=3&pagina=1`;
+        const primeira = await request(app.getHttpServer()).get(url).set(solicitante).expect(200);
+
+        expect(primeira.headers['cache-control']).toBe('private, no-cache');
+        expect(primeira.headers.etag).toBeDefined();
+
+        const igual = await request(app.getHttpServer())
+          .get(url)
+          .set(solicitante)
+          .set('If-None-Match', primeira.headers.etag)
+          .expect(304);
+        expect(igual.text).toBeFalsy();
+
+        await request(app.getHttpServer())
+          .post('/solicitacoes')
+          .set(solicitante)
+          .send({ titulo: `Paginacao ${marcador} novo`, descricao: 'x', categoriaId: 1 })
+          .expect(201);
+
+        const depois = await request(app.getHttpServer())
+          .get(url)
+          .set(solicitante)
+          .set('If-None-Match', primeira.headers.etag)
+          .expect(200);
+        expect(depois.body.total).toBe(primeira.body.total + 1);
+      });
+
+      it('exige autenticação (401)', async () => {
+        await request(app.getHttpServer()).get('/solicitacoes?pagina=1&tamanho=10').expect(401);
+      });
     });
 
     it('consulta os detalhes completos com o histórico', async () => {
@@ -485,7 +820,7 @@ describe('Autenticação e solicitações (e2e)', () => {
 
       // A listagem deriva atendente, última atualização e conclusão do histórico.
       const lista = await listar(atendente, `?q=${codigoProprio}`).expect(200);
-      const item = lista.body.find((s: { codigo: number }) => s.codigo === codigoProprio);
+      const item = lista.body.itens.find((s: { codigo: number }) => s.codigo === codigoProprio);
       expect(item.atendente).toEqual({ id: expect.any(Number), nome: 'Atendente Um' });
       expect(item.dataConclusao).toBe(body.historico[2].dataAlteracao);
       expect(item.ultimaAtualizacao).toBe(body.historico[2].dataAlteracao);
@@ -494,7 +829,7 @@ describe('Autenticação e solicitações (e2e)', () => {
 
     it('chamado sem atendimento aparece com atendente e conclusão nulos', async () => {
       const lista = await listar(atendente, `?q=${codigoAlheio}`).expect(200);
-      const item = lista.body.find((s: { codigo: number }) => s.codigo === codigoAlheio);
+      const item = lista.body.itens.find((s: { codigo: number }) => s.codigo === codigoAlheio);
 
       expect(item.atendente).toBeNull();
       expect(item.dataConclusao).toBeNull();
