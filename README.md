@@ -1,6 +1,6 @@
 # Portal de Solicitações Internas (back-end)
 
-API NestJS + Prisma + PostgreSQL do portal de solicitações (processo seletivo BIT). Contrato da API em [`docs/api.md`](docs/api.md) e casos de uso em [`docs/use-cases.md`](docs/use-cases.md).
+API NestJS + Prisma + PostgreSQL do portal de solicitações (processo seletivo BIT). Contrato da API em [`docs/api.md`](docs/api.md), casos de uso em [`docs/use-cases.md`](docs/use-cases.md) e modelo de dados em [`docs/dicionario-de-dados.md`](docs/dicionario-de-dados.md).
 
 ## Como executar (Docker)
 

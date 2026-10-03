@@ -49,6 +49,7 @@ Copie `.env.example` para `.env` antes de tudo.
 - `prisma/`: schema, migrations, `seed.ts`.
 - `docs/use-cases.md`: casos de uso e burndown.
 - `docs/api.md`: contrato da API para o front (URLs, payloads, erros). Atualize junto com qualquer mudança de endpoint.
+- `docs/dicionario-de-dados.md`: dicionário de dados (tabelas, colunas, índices, FKs, enums, seed). Atualize junto com qualquer mudança em `schema.prisma` ou nas migrations.
 
 ## Fluxo de trabalho
 - **Casos de uso:** o andamento fica em `docs/use-cases.md`, atualizado pela skill `use-cases-burndown`. Status: `Pendente`, `Aguardando Validação`, `Finalizado`. **Finalizado só com aprovação explícita do usuário**; ao terminar de codar, marque `Aguardando Validação`.
