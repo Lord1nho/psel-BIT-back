@@ -24,11 +24,33 @@ Contrato da API por funcionalidade. Os casos de uso estão em [`use-cases.md`](u
 
 | Código | Quando |
 |---|---|
-| 400 | Validação, categoria inexistente ou inativa, filtro malformado, `:codigo` não numérico |
+| 400 | Validação (tipo, tamanho, limites), categoria inexistente ou inativa, filtro malformado, `:codigo` inválido |
+| 413 | Corpo da requisição acima de 100 KB |
 | 401 | Sem token, token inválido ou expirado, login incorreto |
 | 403 | Perfil sem permissão, ou solicitação de outro usuário |
 | 404 | Solicitação não existe |
 | 409 | Status não permite a operação, ou transição de status inválida |
+
+### Limites e regras dos campos
+
+Valide o mesmo no front para evitar a ida ao servidor; o backend rejeita com **400** e uma `message` por campo.
+
+| Campo | Regra |
+|---|---|
+| `titulo` (criar e editar) | Texto de 1 a **255** caracteres, depois de remover os espaços das pontas. |
+| `descricao` (criar e editar) | Texto de 1 a **3.500** caracteres, depois de remover os espaços das pontas. |
+| `usuario` (login) | De 1 a **255** caracteres, sem espaços nas pontas. |
+| `senha` (login) | De 1 a **128** caracteres. Os espaços fazem parte da senha (não são removidos). |
+| `q` (busca) | Até **100** caracteres; `%`, `_` e `\` valem como texto, não como curinga. |
+| `categoriaId`, `atendenteId`, `:codigo` | Inteiro de **1 a 2.147.483.647**. |
+| `pagina` / `tamanho` | `pagina` de 1 a 1.000.000; `tamanho` de 1 a 100. |
+| Corpo da requisição | Até **100 KB** no total (acima disso: 413). |
+
+- **Espaços:** título e descrição são **aparados** ao gravar (`"  ab  "` vira `"ab"`), e texto só com espaços ou quebras de linha conta como vazio (400).
+- **Caractere nulo (U+0000):** é rejeitado em qualquer texto (400), porque o banco não o aceita.
+- **Contagem:** emoji conta como 1 caractere (como no banco); quebras de linha e tabulações são aceitas e contam.
+- **HTML no texto:** é guardado e devolvido **sem alteração**, como texto. A API responde JSON e não executa nada; o front precisa **escapar** ao exibir (o React já faz isso por padrão; evite `dangerouslySetInnerHTML`).
+- **Tipos:** número, array, objeto ou `null` onde se espera texto dá 400, e campos que não existem no contrato também.
 
 ### Permissões por perfil
 
@@ -124,7 +146,7 @@ Todos os parâmetros de query são opcionais e combináveis:
 | `categoriaId` | inteiro | |
 | `atendente` | `meus`, `todos` ou `sem` | **As 3 opções do seletor de atendente** (veja abaixo). |
 | `atendenteId` | inteiro | Um atendente específico: só os chamados que ele assumiu. **Não combina com `atendente`** (400). |
-| `q` | texto, até 100 caracteres | Busca em parte do título, no nome ou usuário do solicitante e, se for só número, no código. Não diferencia maiúsculas. |
+| `q` | texto, até 100 caracteres | Busca em parte do título, no nome ou usuário do solicitante e, se for só número, no código. Não diferencia maiúsculas. `%`, `_` e `\` valem como texto. |
 | `dataInicio` | `AAAA-MM-DD` | |
 | `dataFim` | `AAAA-MM-DD` | Inclusiva. Não pode ser anterior a `dataInicio`. |
 | `pagina` | inteiro ≥ 1 (até 1.000.000) | Padrão 1. |

@@ -11,6 +11,7 @@ import {
   StatusSolicitacao,
 } from '../generated/prisma/client.js';
 import type { UsuarioAutenticado } from '../common/types/usuario-autenticado.js';
+import { escaparCuringasLike } from '../common/validacao/like.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import type { AlterarStatusDto } from './dto/alterar-status.dto.js';
 import type { CriarSolicitacaoDto } from './dto/criar-solicitacao.dto.js';
@@ -331,7 +332,11 @@ export class SolicitacoesService {
   }
 
   private montarBuscaLivre(q: string): Prisma.SolicitacaoWhereInput[] {
-    const contem = { contains: q, mode: 'insensitive' as const };
+    // Curingas do LIKE escapados: "%" e "_" são texto, não coringa.
+    const contem = {
+      contains: escaparCuringasLike(q),
+      mode: 'insensitive' as const,
+    };
     const condicoes: Prisma.SolicitacaoWhereInput[] = [
       { titulo: contem },
       { usuario: { nome: contem } },

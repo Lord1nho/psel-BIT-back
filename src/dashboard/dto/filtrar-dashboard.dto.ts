@@ -1,13 +1,12 @@
 import { Type } from 'class-transformer';
 import {
   IsIn,
-  IsInt,
   IsOptional,
   IsString,
   Matches,
   MaxLength,
-  Min,
 } from 'class-validator';
+import { IdInteiro } from '../../common/validacao/decorators.js';
 import {
   AGRUPAMENTOS,
   PRESETS,
@@ -35,8 +34,7 @@ export class FiltrarDashboardDto {
 
   @IsOptional()
   @Type(() => Number)
-  @IsInt()
-  @Min(1)
+  @IdInteiro()
   categoriaId?: number;
 
   @IsOptional()

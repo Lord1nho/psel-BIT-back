@@ -507,6 +507,17 @@ describe('SolicitacoesService', () => {
       });
     });
 
+    it('a busca livre escapa os curingas do LIKE (% e _ viram texto)', async () => {
+      await service.listar({ q: '100%_a\\b' }, atendente);
+
+      const contem = { contains: '100\\%\\_a\\\\b', mode: 'insensitive' };
+      expect(whereUsado().OR).toEqual([
+        { titulo: contem },
+        { usuario: { nome: contem } },
+        { usuario: { usuario: contem } },
+      ]);
+    });
+
     it('busca livre numérica também procura pelo código', async () => {
       await service.listar({ q: '12' }, atendente);
 

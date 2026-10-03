@@ -1,26 +1,15 @@
-import {
-  IsInt,
-  IsNotEmpty,
-  IsOptional,
-  IsString,
-  MaxLength,
-  Min,
-} from 'class-validator';
+import { IsOptional } from 'class-validator';
+import { IdInteiro, TextoOpcional } from '../../common/validacao/decorators.js';
+import { LIMITES } from '../../common/validacao/limites.js';
 
 export class EditarSolicitacaoDto {
-  @IsOptional()
-  @IsString()
-  @IsNotEmpty()
-  @MaxLength(255)
+  @TextoOpcional(LIMITES.titulo)
   titulo?: string;
 
-  @IsOptional()
-  @IsString()
-  @IsNotEmpty()
+  @TextoOpcional(LIMITES.descricao)
   descricao?: string;
 
   @IsOptional()
-  @IsInt()
-  @Min(1)
+  @IdInteiro()
   categoriaId?: number;
 }
