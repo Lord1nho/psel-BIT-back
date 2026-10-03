@@ -1,21 +1,60 @@
+# Sobe banco + API + front: `docker compose up --build` (nenhum .env é necessário).
+# Dev no host (só o banco): `docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --wait db`.
+name: psel-bit
+
 services:
   db:
     image: postgres:16-alpine
-    container_name: psel-bit-db
     restart: unless-stopped
     environment:
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: ${POSTGRES_DB}
-    ports:
-      - '${POSTGRES_PORT:-5432}:5432'
+      POSTGRES_USER: ${POSTGRES_USER:-psel}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-psel}
+      POSTGRES_DB: ${POSTGRES_DB:-psel_bit}
+    shm_size: 256mb
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}']
+      test: ['CMD-SHELL', 'pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}']
       interval: 5s
       timeout: 3s
       retries: 10
+
+  api:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-psel}:${POSTGRES_PASSWORD:-psel}@db:5432/${POSTGRES_DB:-psel_bit}?schema=public
+      JWT_SECRET: ${JWT_SECRET:-segredo-apenas-para-avaliacao-local}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-1h}
+      CORS_ORIGIN: http://localhost:${FRONT_PORT:-5173}
+      SEED_PASSWORD: ${SEED_PASSWORD:-123456}
+      SEED_DEMO: ${SEED_DEMO:-true}
+    ports:
+      - '${API_PORT:-3000}:3000'
+    healthcheck:
+      # Qualquer resposta HTTP abaixo de 500 (sem token a rota responde 401) indica API de pé.
+      test: ['CMD', 'node', '-e', "fetch('http://localhost:3000/categorias').then(r=>process.exit(r.status<500?0:1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 20s
+
+  front:
+    build:
+      # Padrão: o front é baixado do GitHub. Para usar uma cópia local: FRONT_CONTEXT=../psel-BIT-front
+      context: ${FRONT_CONTEXT:-https://github.com/Lord1nho/psel-BIT-front.git#main}
+      args:
+        # Gravada no build e chamada pelo navegador, por isso aponta para o host, não para o container.
+        VITE_API_URL: http://localhost:${API_PORT:-3000}
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - '${FRONT_PORT:-5173}:80'
 
 volumes:
   pgdata:

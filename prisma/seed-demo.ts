@@ -2,6 +2,7 @@
 //
 //   npm run seed:demo             # cria os chamados (recusa se já existirem)
 //   npm run seed:demo -- --reset  # apaga os chamados de demonstração e recria
+//   npm run seed:demo -- --se-vazio  # só cria se não houver nenhum chamado (usado no Docker)
 //
 // Os chamados de demonstração terminam a descrição com MARCADOR e o histórico segue as
 // regras do sistema: criado como ABERTO, assumido por um atendente e, se concluído,
@@ -9,6 +10,7 @@
 import 'dotenv/config';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient, StatusSolicitacao } from '../src/generated/prisma/client.js';
+import { deveSemear } from './demo-guarda.js';
 
 const prisma = new PrismaClient({
   adapter: new PrismaPg({ connectionString: process.env.DATABASE_URL }),
@@ -137,6 +139,14 @@ function sortearDataCriacao(agora: Date): { data: Date; diasAtras: number } {
 
 async function main() {
   const reset = process.argv.includes('--reset');
+  const seVazio = process.argv.includes('--se-vazio');
+  if (seVazio) {
+    const total = await prisma.solicitacao.count();
+    if (!deveSemear(total, true)) {
+      console.log(`Já existem ${total} chamados: seed de demonstração ignorado.`);
+      return;
+    }
+  }
   const existentes = await prisma.solicitacao.count({
     where: { descricao: { contains: MARCADOR } },
   });

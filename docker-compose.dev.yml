@@ -1,0 +1,5 @@
+# Override para desenvolver no host: expõe o Postgres na porta POSTGRES_PORT (padrão 5433).
+services:
+  db:
+    ports:
+      - '${POSTGRES_PORT:-5433}:5432'
