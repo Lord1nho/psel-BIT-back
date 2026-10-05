@@ -7,9 +7,16 @@ API NestJS + Prisma + PostgreSQL do portal de solicitações internas (processo 
 | Documento | Conteúdo |
 |---|---|
 | [Memorial Técnico](docs/Memorial%20T%C3%A9cnico.docx) | Arquitetura, decisões técnicas e análise crítica |
+| [Requisitos](docs/requisitos.md) | Requisitos do mini-projeto e como cada um foi atendido |
 | [Casos de uso](docs/use-cases.md) | UC01 a UC08, regras de negócio e andamento |
 | [Contrato da API](docs/api.md) | Rotas, payloads, erros e permissões por perfil |
 | [Dicionário de dados](docs/dicionario-de-dados.md) | Tabelas, colunas, índices, relacionamentos e enums |
+
+## Diferenciais
+
+- **Docker e Docker Compose:** banco, API e front sobem com um único comando, com migrations e seed automáticos.
+- **Testes automatizados (back-end):** 292 testes unitários (`npm test`) e 148 de ponta a ponta (`npm run test:e2e`, requer o banco no ar).
+- **Responsividade (front-end):** a interface se adapta a celulares e tablets, com menu lateral recolhível, grades em uma coluna e indicadores reorganizados.
 
 ## Como executar (Docker)
 
