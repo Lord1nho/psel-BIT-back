@@ -47,6 +47,7 @@ Copie `.env.example` para `.env` antes de tudo.
 - `src/configurar-app.ts`: `ValidationPipe` global e CORS (origens em `CORS_ORIGIN`, separadas por vírgula; vazio = nenhuma), usado por `main.ts` e pelo e2e.
 - `src/auth/`, `src/categorias/` (`GET /categorias`, só ativas), `src/solicitacoes/`, `src/comentarios/` e `src/dashboard/`: um módulo por área, com controller fino e regra no service. O dashboard usa SQL agregado (`$queryRaw` com `Prisma.sql`, valores sempre como parâmetros) e funções puras de período em `periodo.ts`.
 - `prisma/`: schema, migrations, `seed.ts`.
+- `docs/requisitos.md`: requisitos do mini-projeto (funcionais, técnicos, deploy e diferenciais) e como foram atendidos.
 - `docs/use-cases.md`: casos de uso e burndown.
 - `docs/api.md`: contrato da API para o front (URLs, payloads, erros). Atualize junto com qualquer mudança de endpoint.
 - `docs/dicionario-de-dados.md`: dicionário de dados (tabelas, colunas, índices, FKs, enums, seed). Atualize junto com qualquer mudança em `schema.prisma` ou nas migrations.
