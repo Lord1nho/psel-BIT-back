@@ -6,7 +6,7 @@ API NestJS + Prisma + PostgreSQL do portal de solicitações internas (processo 
 
 | Documento | Conteúdo |
 |---|---|
-| [Memorial Técnico](docs/Memorial%20T%C3%A9cnico.docx) | Arquitetura, decisões técnicas e análise crítica |
+| [Memorial Técnico](docs/Memorial%20T%C3%A9cnico.pdf) | Arquitetura, decisões técnicas e análise crítica |
 | [Requisitos](docs/requisitos.md) | Requisitos do mini-projeto e como cada um foi atendido |
 | [Casos de uso](docs/use-cases.md) | UC01 a UC08, regras de negócio e andamento |
 | [Contrato da API](docs/api.md) | Rotas, payloads, erros e permissões por perfil |
