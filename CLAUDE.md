@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Backend do portal de solicitações (processo seletivo BIT). Fonte dos requisitos: `Memorial Técnico.docx` (casos de uso e DER). Idioma do projeto: português brasileiro (código de domínio, commits, docs).
+Backend do portal de solicitações (processo seletivo BIT). Documentação em `docs/` (Memorial Técnico, casos de uso, contrato da API e dicionário de dados). Idioma do projeto: português brasileiro (código de domínio, commits, docs).
 
 ## Stack
 - NestJS 12 (TypeScript, ESM: imports relativos com extensão `.js`)
@@ -54,4 +54,4 @@ Copie `.env.example` para `.env` antes de tudo.
 ## Fluxo de trabalho
 - **Casos de uso:** o andamento fica em `docs/use-cases.md`, atualizado pela skill `use-cases-burndown`. Status: `Pendente`, `Aguardando Validação`, `Finalizado`. **Finalizado só com aprovação explícita do usuário**; ao terminar de codar, marque `Aguardando Validação`.
 - **Commits:** Conventional Commits em pt-BR via skill `commits`. Só commitar quando o usuário pedir.
-- Não editar nem mover o `Memorial Técnico.docx`.
+- `docs/Memorial Técnico.docx` só é editado a pedido do usuário.
